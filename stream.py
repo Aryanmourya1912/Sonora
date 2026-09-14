@@ -1,6 +1,6 @@
 import os
 import random
-import pygame
+from kivy.core.audio import SoundLoader
 
 class AudioController:
     def __init__(self):
@@ -12,13 +12,8 @@ class AudioController:
         self.is_shuffled = False
         self._unshuffled_queue = []
         self.current_duration = 0.0
-        self.seek_offset = 0.0
-
-        try:
-            pygame.mixer.pre_init(44100, -16, 2, 2048)
-            pygame.mixer.init()
-        except Exception as e:
-            print(f"[Pygame Audio Init Error] {e}")
+        self.sound = None
+        self._pause_pos = 0.0
 
     def load_queue(self, tracks: list[dict], start_index: int = 0):
         self._unshuffled_queue = list(tracks)
@@ -28,29 +23,34 @@ class AudioController:
     def stop(self):
         self.is_playing = False
         self.is_paused = False
-        self.seek_offset = 0.0
-        try:
-            pygame.mixer.music.stop()
-            if hasattr(pygame.mixer.music, 'unload'):
-                pygame.mixer.music.unload()
-        except Exception:
-            pass
+        self._pause_pos = 0.0
+        if self.sound:
+            try:
+                self.sound.stop()
+                self.sound.unload()
+            except Exception:
+                pass
+            self.sound = None
 
     def play_local_file(self, file_path: str, duration: float = 0.0, start_pos: float = 0.0) -> bool:
-        self.current_duration = float(duration or 0.0)
         self.stop()
+        self.current_duration = float(duration or 0.0)
 
         if not file_path or not os.path.exists(file_path):
             return False
 
         try:
-            pygame.mixer.music.load(file_path)
-            if start_pos > 0.0:
-                pygame.mixer.music.play(start=start_pos)
-                self.seek_offset = start_pos
-            else:
-                pygame.mixer.music.play()
-                self.seek_offset = 0.0
+            self.sound = SoundLoader.load(file_path)
+            if not self.sound:
+                return False
+
+            if self.current_duration <= 0 and hasattr(self.sound, 'length') and self.sound.length > 0:
+                self.current_duration = float(self.sound.length)
+
+            self.sound.play()
+            if start_pos > 0:
+                self.sound.seek(start_pos)
+                self._pause_pos = start_pos
 
             self.is_playing = True
             self.is_paused = False
@@ -62,34 +62,39 @@ class AudioController:
         return False
 
     def toggle_play_pause(self):
-        if not self.is_playing and not self.is_paused:
+        if not self.sound:
             return
 
         if self.is_playing:
             try:
-                pygame.mixer.music.pause()
+                self._pause_pos = self.sound.get_pos()
+                self.sound.stop()
             except Exception:
                 pass
             self.is_playing = False
             self.is_paused = True
-        else:
+        elif self.is_paused:
             try:
-                pygame.mixer.music.unpause()
+                self.sound.play()
+                if self._pause_pos > 0:
+                    self.sound.seek(self._pause_pos)
             except Exception:
                 pass
             self.is_playing = True
             self.is_paused = False
 
     def seek(self, position_ratio: float):
-        if self.current_duration <= 0:
+        if not self.sound or self.current_duration <= 0:
             return
 
         target_pos = self.current_duration * max(0.0, min(1.0, position_ratio))
         try:
-            pygame.mixer.music.play(start=target_pos)
-            self.seek_offset = target_pos
-            self.is_playing = True
-            self.is_paused = False
+            self.sound.seek(target_pos)
+            self._pause_pos = target_pos
+            if not self.is_playing:
+                self.sound.play()
+                self.is_playing = True
+                self.is_paused = False
         except Exception as e:
             print(f"[Seek Error] {e}")
 
@@ -133,20 +138,22 @@ class AudioController:
         return self.queue[0]
 
     def get_progress(self) -> tuple[float, float]:
-        if not self.is_playing and not self.is_paused:
+        if not self.sound or (not self.is_playing and not self.is_paused):
             return 0.0, max(self.current_duration, 1.0)
 
-        elapsed_ms = pygame.mixer.music.get_pos()
-        if elapsed_ms < 0:
-            elapsed_ms = 0
+        pos = 0.0
+        try:
+            if self.is_paused:
+                pos = self._pause_pos
+            else:
+                pos = self.sound.get_pos() or 0.0
+        except Exception:
+            pass
 
-        pos = self.seek_offset + (elapsed_ms / 1000.0)
-        if self.current_duration > 0:
-            pos = min(self.current_duration, pos)
-
-        return max(0.0, pos), max(self.current_duration, 1.0)
+        dur = max(self.current_duration, getattr(self.sound, 'length', 0.0) or 0.0, 1.0)
+        return max(0.0, min(pos, dur)), dur
 
     def is_finished(self) -> bool:
-        if self.is_playing and not self.is_paused:
-            return not pygame.mixer.music.get_busy()
+        if self.is_playing and self.sound:
+            return self.sound.state == 'stop'
         return False

@@ -510,79 +510,28 @@ class SearchEngine:
     # 6. DOWNLOAD AND PREPARE AUDIO
     # =========================================================
 
-    def prepare_audio_file(
-        self,
-        video_url: str,
-        track_id: str,
-    ) -> tuple[str | None, float]:
-        """
-        Download a YouTube audio file and save it in the cache.
-
-        Returns:
-            (file_path, duration)
-
-        If unsuccessful:
-            (None, 0.0)
-        """
-
-        target_path = os.path.abspath(
-            os.path.join(
-                self.cache_dir,
-                f"{track_id}.ogg",
-            )
-        )
-
+    def prepare_audio_file(self, video_url: str, track_id: str) -> tuple[str | None, float]:
+        target_path = os.path.abspath(os.path.join(self.cache_dir, f"{track_id}.m4a"))
         duration = 0.0
 
-        options = {
+        opts = {
             **self.base_opts,
-            "format": "bestaudio/best",
-            "outtmpl": os.path.join(
-                self.cache_dir,
-                f"{track_id}.%(ext)s",
-            ),
-            "postprocessors": [
-                {
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "vorbis",
-                }
-            ],
+            'format': 'bestaudio[ext=m4a]/bestaudio/best',
+            'outtmpl': os.path.join(self.cache_dir, f"{track_id}.%(ext)s"),
         }
 
-        # Download only when the expected OGG file is missing.
         if not os.path.exists(target_path):
             try:
-                with yt_dlp.YoutubeDL(options) as ydl:
-                    info = ydl.extract_info(
-                        video_url,
-                        download=True,
-                    )
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(video_url, download=True)
+                    if info and info.get('duration'):
+                        duration = float(info['duration'])
+            except Exception as err:
+                print(f"[Download Error] {err}")
 
-                    if info and info.get("duration"):
-                        duration = float(info["duration"])
-
-            except Exception as error:
-                print(f"[Download Error] {error}")
-
-        # Check for the downloaded audio file.
         final_file = None
-
-        supported_extensions = (
-            "ogg",
-            "mp3",
-            "m4a",
-            "opus",
-            "webm",
-        )
-
-        for extension in supported_extensions:
-            candidate = os.path.abspath(
-                os.path.join(
-                    self.cache_dir,
-                    f"{track_id}.{extension}",
-                )
-            )
-
+        for ext in ('m4a', 'mp3', 'ogg', 'opus', 'webm'):
+            candidate = os.path.abspath(os.path.join(self.cache_dir, f"{track_id}.{ext}"))
             if os.path.exists(candidate):
                 final_file = candidate
                 break
@@ -590,19 +539,12 @@ class SearchEngine:
         if not final_file:
             return None, 0.0
 
-        # Read duration from the audio file if necessary.
         if duration <= 0:
             try:
-                audio_file = mutagen.File(final_file)
-
-                if (
-                    audio_file
-                    and audio_file.info
-                    and hasattr(audio_file.info, "length")
-                ):
-                    duration = float(audio_file.info.length)
-
-            except Exception as error:
-                print(f"[Metadata Error] {error}")
+                mf = mutagen.File(final_file)
+                if mf and mf.info and hasattr(mf.info, 'length'):
+                    duration = float(mf.info.length)
+            except Exception:
+                pass
 
         return final_file, duration
