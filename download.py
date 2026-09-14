@@ -1,6 +1,34 @@
 import os
 import threading
 import yt_dlp
+import certifi
+
+class DownloadManager:
+    def __init__(self, download_dir: str = "downloads"):
+        self.download_dir = download_dir
+        os.makedirs(self.download_dir, exist_ok=True)
+
+    def download_track(self, video_url: str, title: str, progress_callback=None) -> bool:
+        safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '_', '-')).rstrip()
+        out_template = os.path.join(self.download_dir, f"{safe_title}.%(ext)s")
+
+        ydl_opts = {
+            'format': 'bestaudio[ext=m4a]/bestaudio/best',
+            'outtmpl': out_template,
+            'nocheckcertificate': True,
+            'quiet': True,
+            'no_warnings': True,
+            'cachedir': False,
+        }
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([video_url])
+            return True
+        except Exception as e:
+            print(f"[Download Error] {e}")
+            return False
+            
 
 class SafeLogger:
     """Silences yt-dlp output to prevent crashing on redirected streams."""

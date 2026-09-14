@@ -4,6 +4,44 @@ import re
 
 import mutagen
 import yt_dlp
+import certifi
+
+class SearchManager:
+    def __init__(self, cache_dir: str = "cache"):
+        self.cache_dir = cache_dir
+        os.makedirs(self.cache_dir, exist_ok=True)
+
+        self.ydl_opts = {
+            'format': 'bestaudio[ext=m4a]/bestaudio/best',
+            'quiet': True,
+            'no_warnings': True,
+            'nocheckcertificate': True,
+            'cachedir': False,
+            'outtmpl': os.path.join(self.cache_dir, '%(id)s.%(ext)s'),
+        }
+
+    def prepare_audio_file(self, video_url: str, track_id: str) -> tuple[str | None, float]:
+        target_path = os.path.join(self.cache_dir, f"{track_id}.m4a")
+        duration = 0.0
+
+        if not os.path.exists(target_path):
+            try:
+                with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
+                    info = ydl.extract_info(video_url, download=True)
+                    if info:
+                        duration = float(info.get('duration') or 0.0)
+            except Exception as e:
+                print(f"[Stream Fetch Error] {e}")
+                return None, 0.0
+
+        # Detect the downloaded file
+        for ext in ('m4a', 'mp3', 'webm', 'opus'):
+            candidate = os.path.join(self.cache_dir, f"{track_id}.{ext}")
+            if os.path.exists(candidate):
+                return candidate, duration
+
+        return None, 0.0
+        
 
 
 class SafeLogger:

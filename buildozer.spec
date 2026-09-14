@@ -10,7 +10,7 @@ package.name = musicplayer
 package.domain = org.app
 
 # (str) Application versioning
-version = 0.1
+version = 0.2
 
 # (str) Source code directory
 source.dir = .
