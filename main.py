@@ -1003,5 +1003,27 @@ class MusicPlayerApp(MDApp):
             item.bind(on_release=lambda inst, t=track: self._start_new_radio_mix(t))
             self.screen.list_view.add_widget(item)
 
-if __name__ == "__main__":
-    MusicPlayerApp().run()
+if __name__ == '__main__':
+    try:
+        MusicPlayerApp().run()
+    except Exception as e:
+        import traceback
+        error_msg = traceback.format_exc()
+        print(error_msg)
+
+        # Attempt to save crash log to accessible storage
+        try:
+            from kivy.utils import platform
+            if platform == 'android':
+                from jnius import autoclass
+                PythonActivity = autoclass('org.kivy.android.PythonActivity')
+                context = PythonActivity.mActivity
+                log_dir = context.getExternalFilesDir(None).getAbsolutePath()
+            else:
+                log_dir = os.path.abspath(".")
+            
+            with open(os.path.join(log_dir, "crash_log.txt"), "w") as f:
+                f.write(error_msg)
+        except Exception:
+            pass
+        raise

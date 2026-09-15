@@ -20,10 +20,18 @@ class AudioController:
         self._unshuffled_queue = []
         self.current_duration = 0.0
 
-        # Engine handles
-        self.android_player = AndroidMediaPlayer() if AndroidMediaPlayer else None
+        # Do NOT instantiate AndroidMediaPlayer here; instantiate on demand
+        self.android_player = None
         self.desktop_sound = None
         self._pause_pos = 0.0
+
+    def _get_android_player(self):
+        if platform == 'android' and self.android_player is None and AndroidMediaPlayer:
+            try:
+                self.android_player = AndroidMediaPlayer()
+            except Exception as e:
+                print(f"[Player Init Error] {e}")
+        return self.android_player
 
     def load_queue(self, tracks: list[dict], start_index: int = 0):
         self._unshuffled_queue = list(tracks)
@@ -37,8 +45,6 @@ class AudioController:
 
         if platform == 'android' and self.android_player:
             try:
-                if self.android_player.isPlaying():
-                    self.android_player.stop()
                 self.android_player.reset()
             except Exception:
                 pass
@@ -58,24 +64,27 @@ class AudioController:
             return False
 
         if platform == 'android':
+            player = self._get_android_player()
+            if not player:
+                return False
             try:
-                self.android_player.reset()
-                self.android_player.setDataSource(file_path)
-                self.android_player.prepare()
-                
+                player.reset()
+                player.setDataSource(file_path)
+                player.prepare()
+
                 if start_pos > 0:
-                    self.android_player.seekTo(int(start_pos * 1000))
-                
-                self.android_player.start()
+                    player.seekTo(int(start_pos * 1000))
+
+                player.start()
                 self.is_playing = True
                 self.is_paused = False
 
-                dur_ms = self.android_player.getDuration()
+                dur_ms = player.getDuration()
                 if dur_ms > 0:
                     self.current_duration = float(dur_ms) / 1000.0
                 return True
             except Exception as err:
-                print(f"[Android Media Error] {err}")
+                print(f"[Android Media Play Error] {err}")
                 return False
         else:
             try:
@@ -89,7 +98,7 @@ class AudioController:
                 self.is_paused = False
                 return True
             except Exception as err:
-                print(f"[Desktop Media Error] {err}")
+                print(f"[Desktop Media Play Error] {err}")
                 return False
 
     def toggle_play_pause(self):

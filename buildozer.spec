@@ -1,16 +1,22 @@
 [app]
 
-# (str) Title of your application
-title = Music Player
+# (str) Title of your application (This is the name shown under the icon on your phone)
+title = Sonora
 
-# (str) Package name
-package.name = musicplayer
+# (str) Package name (lowercase, no spaces)
+package.name = sonora
+
+# (str) Icon of the application
+icon.filename = %(source.dir)s/icon.png
+
+# (str) Presplash of the application (optional loading screen)
+presplash.filename = %(source.dir)s/splash.png
 
 # (str) Package domain (unique package identifier)
 package.domain = org.app
 
 # (str) Application versioning
-version = 0.3
+version = 0.4
 
 # (str) Source code directory
 source.dir = .
