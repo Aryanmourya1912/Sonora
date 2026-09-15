@@ -1,6 +1,13 @@
 import os
 import random
-from kivy.core.audio import SoundLoader
+from kivy.utils import platform
+
+if platform == 'android':
+    from jnius import autoclass
+    AndroidMediaPlayer = autoclass('android.media.MediaPlayer')
+else:
+    from kivy.core.audio import SoundLoader
+    AndroidMediaPlayer = None
 
 class AudioController:
     def __init__(self):
@@ -8,11 +15,14 @@ class AudioController:
         self.current_index = -1
         self.is_playing = False
         self.is_paused = False
-        self.repeat_mode = "off"  # "off" | "one" | "all"
+        self.repeat_mode = "off"
         self.is_shuffled = False
         self._unshuffled_queue = []
         self.current_duration = 0.0
-        self.sound = None
+
+        # Engine handles
+        self.android_player = AndroidMediaPlayer() if AndroidMediaPlayer else None
+        self.desktop_sound = None
         self._pause_pos = 0.0
 
     def load_queue(self, tracks: list[dict], start_index: int = 0):
@@ -24,13 +34,21 @@ class AudioController:
         self.is_playing = False
         self.is_paused = False
         self._pause_pos = 0.0
-        if self.sound:
+
+        if platform == 'android' and self.android_player:
             try:
-                self.sound.stop()
-                self.sound.unload()
+                if self.android_player.isPlaying():
+                    self.android_player.stop()
+                self.android_player.reset()
             except Exception:
                 pass
-            self.sound = None
+        elif self.desktop_sound:
+            try:
+                self.desktop_sound.stop()
+                self.desktop_sound.unload()
+            except Exception:
+                pass
+            self.desktop_sound = None
 
     def play_local_file(self, file_path: str, duration: float = 0.0, start_pos: float = 0.0) -> bool:
         self.stop()
@@ -39,82 +57,114 @@ class AudioController:
         if not file_path or not os.path.exists(file_path):
             return False
 
-        try:
-            self.sound = SoundLoader.load(file_path)
-            if not self.sound:
-                return False
-
-            if self.current_duration <= 0 and hasattr(self.sound, 'length') and self.sound.length > 0:
-                self.current_duration = float(self.sound.length)
-
-            self.sound.play()
-            if start_pos > 0:
-                self.sound.seek(start_pos)
-                self._pause_pos = start_pos
-
-            self.is_playing = True
-            self.is_paused = False
-            return True
-        except Exception as e:
-            print(f"[Audio Error] {e}")
-
-        self.is_playing = False
-        return False
-
-    def toggle_play_pause(self):
-        if not self.sound:
-            return
-
-        if self.is_playing:
+        if platform == 'android':
             try:
-                self._pause_pos = self.sound.get_pos()
-                self.sound.stop()
-            except Exception:
-                pass
-            self.is_playing = False
-            self.is_paused = True
-        elif self.is_paused:
-            try:
-                self.sound.play()
-                if self._pause_pos > 0:
-                    self.sound.seek(self._pause_pos)
-            except Exception:
-                pass
-            self.is_playing = True
-            self.is_paused = False
-
-    def seek(self, position_ratio: float):
-        if not self.sound or self.current_duration <= 0:
-            return
-
-        target_pos = self.current_duration * max(0.0, min(1.0, position_ratio))
-        try:
-            self.sound.seek(target_pos)
-            self._pause_pos = target_pos
-            if not self.is_playing:
-                self.sound.play()
+                self.android_player.reset()
+                self.android_player.setDataSource(file_path)
+                self.android_player.prepare()
+                
+                if start_pos > 0:
+                    self.android_player.seekTo(int(start_pos * 1000))
+                
+                self.android_player.start()
                 self.is_playing = True
                 self.is_paused = False
-        except Exception as e:
-            print(f"[Seek Error] {e}")
 
-    def toggle_shuffle(self):
-        self.is_shuffled = not self.is_shuffled
-        if self.is_shuffled:
-            current_track = self.queue[self.current_index] if (0 <= self.current_index < len(self.queue)) else None
-            random.shuffle(self.queue)
-            if current_track in self.queue:
-                self.queue.remove(current_track)
-                self.queue.insert(0, current_track)
-                self.current_index = 0
+                dur_ms = self.android_player.getDuration()
+                if dur_ms > 0:
+                    self.current_duration = float(dur_ms) / 1000.0
+                return True
+            except Exception as err:
+                print(f"[Android Media Error] {err}")
+                return False
         else:
-            current_track = self.queue[self.current_index] if (0 <= self.current_index < len(self.queue)) else None
-            self.queue = list(self._unshuffled_queue)
-            if current_track in self.queue:
-                self.current_index = self.queue.index(current_track)
+            try:
+                self.desktop_sound = SoundLoader.load(file_path)
+                if not self.desktop_sound:
+                    return False
+                self.desktop_sound.play()
+                if start_pos > 0:
+                    self.desktop_sound.seek(start_pos)
+                self.is_playing = True
+                self.is_paused = False
+                return True
+            except Exception as err:
+                print(f"[Desktop Media Error] {err}")
+                return False
 
-    def set_repeat_mode(self, mode: str):
-        self.repeat_mode = mode
+    def toggle_play_pause(self):
+        if platform == 'android' and self.android_player:
+            try:
+                if self.is_playing:
+                    self.android_player.pause()
+                    self.is_playing = False
+                    self.is_paused = True
+                elif self.is_paused:
+                    self.android_player.start()
+                    self.is_playing = True
+                    self.is_paused = False
+            except Exception:
+                pass
+        elif self.desktop_sound:
+            if self.is_playing:
+                self._pause_pos = self.desktop_sound.get_pos()
+                self.desktop_sound.stop()
+                self.is_playing = False
+                self.is_paused = True
+            elif self.is_paused:
+                self.desktop_sound.play()
+                if self._pause_pos > 0:
+                    self.desktop_sound.seek(self._pause_pos)
+                self.is_playing = True
+                self.is_paused = False
+
+    def seek(self, position_ratio: float):
+        if self.current_duration <= 0:
+            return
+        target_sec = self.current_duration * max(0.0, min(1.0, position_ratio))
+
+        if platform == 'android' and self.android_player:
+            try:
+                self.android_player.seekTo(int(target_sec * 1000))
+                if not self.is_playing:
+                    self.android_player.start()
+                    self.is_playing = True
+                    self.is_paused = False
+            except Exception:
+                pass
+        elif self.desktop_sound:
+            try:
+                self.desktop_sound.seek(target_sec)
+                self._pause_pos = target_sec
+            except Exception:
+                pass
+
+    def get_progress(self) -> tuple[float, float]:
+        dur = max(self.current_duration, 1.0)
+        pos = 0.0
+
+        if platform == 'android' and self.android_player:
+            try:
+                pos = float(self.android_player.getCurrentPosition()) / 1000.0
+            except Exception:
+                pos = 0.0
+        elif self.desktop_sound:
+            try:
+                pos = self._pause_pos if self.is_paused else (self.desktop_sound.get_pos() or 0.0)
+            except Exception:
+                pos = 0.0
+
+        return max(0.0, min(pos, dur)), dur
+
+    def is_finished(self) -> bool:
+        if platform == 'android' and self.android_player:
+            try:
+                return not self.android_player.isPlaying() and not self.is_paused and self.is_playing
+            except Exception:
+                return False
+        elif self.desktop_sound and self.is_playing:
+            return self.desktop_sound.state == 'stop'
+        return False
 
     def next_track(self) -> dict | None:
         if not self.queue:
@@ -136,24 +186,3 @@ class AudioController:
             self.current_index -= 1
             return self.queue[self.current_index]
         return self.queue[0]
-
-    def get_progress(self) -> tuple[float, float]:
-        if not self.sound or (not self.is_playing and not self.is_paused):
-            return 0.0, max(self.current_duration, 1.0)
-
-        pos = 0.0
-        try:
-            if self.is_paused:
-                pos = self._pause_pos
-            else:
-                pos = self.sound.get_pos() or 0.0
-        except Exception:
-            pass
-
-        dur = max(self.current_duration, getattr(self.sound, 'length', 0.0) or 0.0, 1.0)
-        return max(0.0, min(pos, dur)), dur
-
-    def is_finished(self) -> bool:
-        if self.is_playing and self.sound:
-            return self.sound.state == 'stop'
-        return False

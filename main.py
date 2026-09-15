@@ -1,18 +1,6 @@
 import os
 import sys
 
-# 1. FIX SSL CERTIFICATES FOR ANDROID & YT-DLP
-import certifi
-os.environ['SSL_CERT_FILE'] = certifi.where()
-os.environ['SSL_CERT_DIR'] = os.path.dirname(certifi.where())
-
-from kivy.utils import platform
-from kivy.core.window import Window
-
-# 2. FIX UI ALIGNMENT: Only lock size on PC, allow Android to use full native screen
-if platform != 'android':
-    Window.size = (420, 760)
-
 os.environ['KIVY_IMAGE'] = 'pil,sdl2'
 
 import logging
@@ -57,15 +45,6 @@ def format_time(seconds: float) -> str:
 
 class MusicPlayerApp(MDApp):
     def build(self):
-        # Point cache, downloads, and SQLite to safe writable storage
-        self.cache_dir = self.get_storage_path("cache")
-        self.download_dir = self.get_storage_path("downloads")
-        self.db_path = os.path.join(self.get_storage_path(), "player_data.db")
-
-        # Initialize managers with explicit writable paths
-        self.playlist_mgr = PlaylistManager(db_path=self.db_path)
-        self.search_mgr = SearchManager(cache_dir=self.cache_dir)
-        self.download_mgr = DownloadManager(download_dir=self.download_dir)
         self.theme_cls.theme_style = "Dark"
         self.theme_cls.primary_palette = "Amber"
 
@@ -496,6 +475,21 @@ class MusicPlayerApp(MDApp):
             on_error=lambda err: Clock.schedule_once(lambda dt: self._set_artist_text("Download failed"))
         )
 
+    def _trigger_download(self, track_data: dict):
+        """Dispatches downloads to a daemon thread to prevent Android UI lockups."""
+        self.screen.show_toast("Downloading song...")
+
+        def _worker():
+            url = track_data.get('webpage_url') or f"https://www.youtube.com/watch?v={track_data.get('id')}"
+            success = self.download_mgr.download_track(url, track_data.get('title', 'track'))
+            
+            # Update UI on completion
+            Clock.schedule_once(lambda dt: self.screen.show_toast(
+                "Download finished!" if success else "Download failed"
+            ), 0)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     def _set_artist_text(self, text: str):
         self.screen.mini_artist.text = text
         self.screen.full_artist.text = text
@@ -506,17 +500,6 @@ class MusicPlayerApp(MDApp):
         url = self.current_track.get('webpage_url') or f"https://www.youtube.com/watch?v={self.current_track.get('id', '')}"
         Clipboard.copy(url)
         self._set_artist_text("Link copied to clipboard!")
-        
-    def get_storage_path(self, folder_name: str = "") -> str:
-        """Returns a guaranteed writable storage directory on both PC and Android."""
-        if platform == 'android':
-            base = self.user_data_dir
-        else:
-            base = os.path.abspath(".")
-        
-        target = os.path.join(base, folder_name) if folder_name else base
-        os.makedirs(target, exist_ok=True)
-        return target    
 
     # ----------------- SONG DETAILS MODAL -----------------
     def _show_song_details(self):
