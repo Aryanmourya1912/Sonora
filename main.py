@@ -77,9 +77,9 @@ def launch():
     except Exception:
         pass
 
-    # 2. Defer heavy imports to prevent silent module-level crash
+    # 2. Run the App class defined right here in main.py
     try:
-        from ui import MusicPlayerApp
+        # Replace SonoraApp with the exact class name you found in Step 1
         MusicPlayerApp().run()
     except Exception:
         CrashReporterApp(traceback.format_exc()).run()
