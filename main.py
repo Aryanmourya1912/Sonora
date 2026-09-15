@@ -35,6 +35,59 @@ from playlist import PlaylistManager
 from download import Downloader
 from ui import PlayerScreen, SongCard
 
+import traceback
+
+# Base Kivy primitives (these never fail to import)
+from kivy.app import App
+from kivy.uix.scrollview import ScrollView
+from kivy.uix.label import Label
+from kivy.core.window import Window
+
+
+class CrashReporterApp(App):
+    """Displays the exact fatal error on screen if the main app fails to load."""
+    def __init__(self, error_msg, **kwargs):
+        super().__init__(**kwargs)
+        self.error_msg = error_msg
+
+    def build(self):
+        Window.clearcolor = (0.1, 0.1, 0.1, 1)
+        sv = ScrollView(size_hint=(1, 1))
+        lbl = Label(
+            text=f"[CRASH TRACEBACK]\n\n{self.error_msg}",
+            color=(1, 0.3, 0.3, 1),
+            font_size="11sp",
+            size_hint_y=None,
+            padding=(20, 20),
+            halign="left",
+            valign="top"
+        )
+        lbl.bind(texture_size=lambda instance, val: setattr(instance, 'height', val[1]))
+        lbl.bind(width=lambda instance, val: setattr(instance, 'text_size', (val - 40, None)))
+        sv.add_widget(lbl)
+        return sv
+
+
+def launch():
+    # 1. Apply SSL fixes
+    try:
+        import certifi
+        os.environ['SSL_CERT_FILE'] = certifi.where()
+        os.environ['SSL_CERT_DIR'] = os.path.dirname(certifi.where())
+    except Exception:
+        pass
+
+    # 2. Defer heavy imports to prevent silent module-level crash
+    try:
+        from ui import MusicPlayerApp
+        MusicPlayerApp().run()
+    except Exception:
+        CrashReporterApp(traceback.format_exc()).run()
+
+
+if __name__ == '__main__':
+    launch()
+
 def format_time(seconds: float) -> str:
     seconds = max(0, int(seconds))
     mins, secs = divmod(seconds, 60)
