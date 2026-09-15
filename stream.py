@@ -86,15 +86,25 @@ class AudioController:
             if not player:
                 return False
             try:
-                # Keep CPU awake during playback
+                # Keep CPU awake and claim Audio Focus for Bluetooth controls
                 try:
-                    from jnius import autoclass
+                    from jnius import autoclass  # type: ignore
+
                     PythonActivity = autoclass('org.kivy.android.PythonActivity')
                     PowerManager = autoclass('android.os.PowerManager')
+                    Context = autoclass('android.content.Context')
+                    AudioManager = autoclass('android.media.AudioManager')
+
                     context = PythonActivity.mActivity.getApplicationContext()
+
+                    # 1. Prevent CPU sleep while song plays
                     player.setWakeMode(context, PowerManager.PARTIAL_WAKE_LOCK)
-                except Exception as w_err:
-                    print(f"[WakeMode Warning] {w_err}")
+
+                    # 2. Request system Audio Focus so Bluetooth earbud taps route to this app
+                    audio_service = context.getSystemService(Context.AUDIO_SERVICE)
+                    audio_service.requestAudioFocus(None, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN)
+                except Exception as af_err:
+                    print(f"[Audio Focus / Wake Error] {af_err}")
 
                 player.reset()
                 player.setDataSource(file_path)

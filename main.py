@@ -97,28 +97,59 @@ class MusicPlayerApp(MDApp):
         # Initialize notification controller
         self.notif_mgr = PlaybackNotificationManager()
 
-        # Register background broadcast receiver for notification actions
+        # Register background broadcast receiver for notification & bluetooth actions
         if platform == 'android':
-            from android.broadcast import BroadcastReceiver  # type: ignore
+            try:
+                from android.broadcast import BroadcastReceiver  # type: ignore
+                from jnius import autoclass  # type: ignore
 
-            def _on_notification_action(context, intent):
-                action = intent.getAction() if intent else ""
-                if action == PlaybackNotificationManager.ACTION_TOGGLE:
-                    self._toggle_play()
-                elif action == PlaybackNotificationManager.ACTION_NEXT:
-                    self._play_next()
-                elif action == PlaybackNotificationManager.ACTION_PREV:
-                    self._play_prev()
+                Intent = autoclass('android.content.Intent')
+                KeyEvent = autoclass('android.view.KeyEvent')
 
-            self._notif_receiver = BroadcastReceiver(
-                _on_notification_action,
-                actions=[
-                    PlaybackNotificationManager.ACTION_PREV,
-                    PlaybackNotificationManager.ACTION_TOGGLE,
-                    PlaybackNotificationManager.ACTION_NEXT,
-                ]
-            )
-            self._notif_receiver.start()
+                def _on_notification_action(context, intent):
+                    if not intent:
+                        return
+                    action = intent.getAction()
+
+                    # 1. Handle on-screen notification buttons
+                    if action == PlaybackNotificationManager.ACTION_TOGGLE:
+                        self._toggle_play()
+                    elif action == PlaybackNotificationManager.ACTION_NEXT:
+                        self._play_next()
+                    elif action == PlaybackNotificationManager.ACTION_PREV:
+                        self._play_prev()
+
+                    # 2. Handle Bluetooth earbud and wired headset clicks
+                    elif action == Intent.ACTION_MEDIA_BUTTON:
+                        key_event = intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT)
+                        # Filter only ACTION_DOWN so single taps don't trigger twice
+                        if key_event and key_event.getAction() == KeyEvent.ACTION_DOWN:
+                            code = key_event.getKeyCode()
+                            if code in (KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_HEADSETHOOK):
+                                self._toggle_play()
+                            elif code == KeyEvent.KEYCODE_MEDIA_PLAY:
+                                if not self.audio.is_playing:
+                                    self._toggle_play()
+                            elif code == KeyEvent.KEYCODE_MEDIA_PAUSE:
+                                if self.audio.is_playing:
+                                    self._toggle_play()
+                            elif code == KeyEvent.KEYCODE_MEDIA_NEXT:
+                                self._play_next()
+                            elif code == KeyEvent.KEYCODE_MEDIA_PREVIOUS:
+                                self._play_prev()
+
+                self._notif_receiver = BroadcastReceiver(
+                    _on_notification_action,
+                    actions=[
+                        PlaybackNotificationManager.ACTION_PREV,
+                        PlaybackNotificationManager.ACTION_TOGGLE,
+                        PlaybackNotificationManager.ACTION_NEXT,
+                        Intent.ACTION_MEDIA_BUTTON,
+                    ]
+                )
+                self._notif_receiver.start()
+            except Exception as r_err:
+                print(f"[Receiver Init Error] {r_err}")
 
         # State restoration tracking
         self.restored_position = 0.0
