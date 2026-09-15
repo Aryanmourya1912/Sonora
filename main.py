@@ -1,14 +1,29 @@
 import os
 import sys
 
+# 1. Image and SSL Environment Fixes
 os.environ['KIVY_IMAGE'] = 'pil,sdl2'
+try:
+    import certifi
+    os.environ['SSL_CERT_FILE'] = certifi.where()
+    os.environ['SSL_CERT_DIR'] = os.path.dirname(certifi.where())
+except Exception:
+    pass
 
 import logging
 import urllib.request
 import threading
 import mutagen
+import traceback
 
 logging.getLogger("PIL").setLevel(logging.WARNING)
+
+from kivy.utils import platform
+from kivy.core.window import Window
+
+# Lock orientation sizing only for desktop testing
+if platform != 'android':
+    Window.size = (420, 760)
 
 from kivymd.app import MDApp
 from kivymd.uix.label import MDLabel
@@ -28,6 +43,9 @@ from kivy.core.clipboard import Clipboard
 from kivy.metrics import dp
 from kivy.clock import Clock
 from kivy.animation import Animation
+from kivy.app import App
+from kivy.uix.scrollview import ScrollView
+from kivy.uix.label import Label
 
 from search import SearchEngine
 from stream import AudioController
@@ -35,58 +53,6 @@ from playlist import PlaylistManager
 from download import Downloader
 from ui import PlayerScreen, SongCard
 
-import traceback
-
-# Base Kivy primitives (these never fail to import)
-from kivy.app import App
-from kivy.uix.scrollview import ScrollView
-from kivy.uix.label import Label
-from kivy.core.window import Window
-
-
-class CrashReporterApp(App):
-    """Displays the exact fatal error on screen if the main app fails to load."""
-    def __init__(self, error_msg, **kwargs):
-        super().__init__(**kwargs)
-        self.error_msg = error_msg
-
-    def build(self):
-        Window.clearcolor = (0.1, 0.1, 0.1, 1)
-        sv = ScrollView(size_hint=(1, 1))
-        lbl = Label(
-            text=f"[CRASH TRACEBACK]\n\n{self.error_msg}",
-            color=(1, 0.3, 0.3, 1),
-            font_size="11sp",
-            size_hint_y=None,
-            padding=(20, 20),
-            halign="left",
-            valign="top"
-        )
-        lbl.bind(texture_size=lambda instance, val: setattr(instance, 'height', val[1]))
-        lbl.bind(width=lambda instance, val: setattr(instance, 'text_size', (val - 40, None)))
-        sv.add_widget(lbl)
-        return sv
-
-
-def launch():
-    # 1. Apply SSL fixes
-    try:
-        import certifi
-        os.environ['SSL_CERT_FILE'] = certifi.where()
-        os.environ['SSL_CERT_DIR'] = os.path.dirname(certifi.where())
-    except Exception:
-        pass
-
-    # 2. Run the App class defined right here in main.py
-    try:
-        # Replace SonoraApp with the exact class name you found in Step 1
-        MusicPlayerApp().run()
-    except Exception:
-        CrashReporterApp(traceback.format_exc()).run()
-
-
-if __name__ == '__main__':
-    launch()
 
 def format_time(seconds: float) -> str:
     seconds = max(0, int(seconds))
@@ -95,6 +61,7 @@ def format_time(seconds: float) -> str:
     if hours > 0:
         return f"{hours}:{mins:02d}:{secs:02d}"
     return f"{mins}:{secs:02d}"
+
 
 class MusicPlayerApp(MDApp):
     def build(self):
@@ -519,27 +486,25 @@ class MusicPlayerApp(MDApp):
         title = self.current_track.get('title', 'Track')[:24]
         self._set_artist_text(f"Downloading: {title}...")
 
-        def _on_finish():
-            Clock.schedule_once(lambda dt: self._set_artist_text("Saved to downloads/"))
+        def _worker():
+            url = self.current_track.get('webpage_url') or f"https://www.youtube.com/watch?v={self.current_track.get('id')}"
+            success = self.downloader.download_track(url, self.current_track.get('title', 'track'))
+            Clock.schedule_once(lambda dt: self._set_artist_text(
+                "Saved to downloads/" if success else "Download failed"
+            ))
 
-        self.downloader.download_track(
-            video_url=self.current_track['webpage_url'],
-            on_complete=_on_finish,
-            on_error=lambda err: Clock.schedule_once(lambda dt: self._set_artist_text("Download failed"))
-        )
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _trigger_download(self, track_data: dict):
         """Dispatches downloads to a daemon thread to prevent Android UI lockups."""
-        self.screen.show_toast("Downloading song...")
+        self._set_artist_text("Downloading song...")
 
         def _worker():
             url = track_data.get('webpage_url') or f"https://www.youtube.com/watch?v={track_data.get('id')}"
-            success = self.download_mgr.download_track(url, track_data.get('title', 'track'))
-            
-            # Update UI on completion
-            Clock.schedule_once(lambda dt: self.screen.show_toast(
+            success = self.downloader.download_track(url, track_data.get('title', 'track'))
+            Clock.schedule_once(lambda dt: self._set_artist_text(
                 "Download finished!" if success else "Download failed"
-            ), 0)
+            ))
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -636,21 +601,16 @@ class MusicPlayerApp(MDApp):
 
     # ----------------- REFRESH & DISCOVERY -----------------
     def _on_refresh_home(self):
-        """Fetches a completely new random set of songs without restarting the app."""
-        # Visual pulse animation on the refresh icon
         anim = Animation(opacity=0.3, duration=0.1) + Animation(opacity=1.0, duration=0.15)
         anim.start(self.screen.btn_refresh)
 
-        # Show temporary discovering state and clear current cards
         self.screen.section_label.text = "Discovering new picks..."
         self.screen.grid.clear_widgets()
 
-        # Fetch new randomized songs in a daemon thread
         threading.Thread(target=self._load_dynamic_home_music, daemon=True).start()
 
     # ----------------- DYNAMIC HOME & SPEED DIAL -----------------
     def _load_dynamic_home_music(self, query=None):
-        """Loads a different genre or viral set on each invocation."""
         if query:
             tracks = self.search_engine.search_tracks(query, max_results=9)
         else:
@@ -670,6 +630,7 @@ class MusicPlayerApp(MDApp):
                 on_click_callback=lambda t: self._start_new_radio_mix(t)
             )
             self.screen.grid.add_widget(card)
+
     def _start_new_radio_mix(self, track: dict):
         self.is_restored_state = False
         self.restored_position = 0.0
@@ -763,11 +724,8 @@ class MusicPlayerApp(MDApp):
     def _start_download_from_list(self, track: dict, button: IconRightWidget):
         button.disabled = True
         button.icon = "progress-download"
-        self.downloader.download_track(
-            video_url=track['webpage_url'],
-            on_complete=lambda: Clock.schedule_once(lambda dt: setattr(button, 'icon', 'check-circle')),
-            on_error=lambda err: Clock.schedule_once(lambda dt: setattr(button, 'icon', 'alert-circle'))
-        )
+        self._trigger_download(track)
+        Clock.schedule_once(lambda dt: setattr(button, 'icon', 'check-circle'), 3.0)
 
     # ----------------- PLAYBACK CONTROLLER -----------------
     def play_track(self, track: dict, start_pos: float = 0.0):
@@ -852,7 +810,6 @@ class MusicPlayerApp(MDApp):
         self.screen.mini_artwork.source = path
         self.screen.full_artwork.source = path
 
-        # Safely reload only if the internal container has already been built
         try:
             if getattr(self.screen.mini_artwork, '_container', None) and getattr(self.screen.mini_artwork._container, 'image', None):
                 self.screen.mini_artwork.reload()
@@ -862,7 +819,6 @@ class MusicPlayerApp(MDApp):
             pass
 
     def _toggle_play(self):
-        # If user taps play on a restored track from previous session
         if self.is_restored_state and self.current_track and not self.audio.is_playing:
             self.is_restored_state = False
             self.play_track(self.current_track, start_pos=self.restored_position)
@@ -955,7 +911,6 @@ class MusicPlayerApp(MDApp):
             self.screen.time_current.text = format_time(pos)
             self.screen.time_total.text = format_time(length)
 
-        # Periodic disk persistence (every 3 seconds)
         self._ticks_since_save += 1
         if self._ticks_since_save >= 12 and self.audio.is_playing:
             self._ticks_since_save = 0
@@ -1056,27 +1011,34 @@ class MusicPlayerApp(MDApp):
             item.bind(on_release=lambda inst, t=track: self._start_new_radio_mix(t))
             self.screen.list_view.add_widget(item)
 
+
+# ----------------- CRASH REPORTER & ENTRY POINT -----------------
+class CrashReporterApp(App):
+    """Displays error traceback directly on mobile screen if initialization fails."""
+    def __init__(self, error_msg, **kwargs):
+        super().__init__(**kwargs)
+        self.error_msg = error_msg
+
+    def build(self):
+        Window.clearcolor = (0.1, 0.1, 0.1, 1)
+        sv = ScrollView(size_hint=(1, 1))
+        lbl = Label(
+            text=f"[CRASH TRACEBACK]\n\n{self.error_msg}",
+            color=(1, 0.3, 0.3, 1),
+            font_size="11sp",
+            size_hint_y=None,
+            padding=(20, 20),
+            halign="left",
+            valign="top"
+        )
+        lbl.bind(texture_size=lambda instance, val: setattr(instance, 'height', val[1]))
+        lbl.bind(width=lambda instance, val: setattr(instance, 'text_size', (val - 40, None)))
+        sv.add_widget(lbl)
+        return sv
+
+
 if __name__ == '__main__':
     try:
         MusicPlayerApp().run()
-    except Exception as e:
-        import traceback
-        error_msg = traceback.format_exc()
-        print(error_msg)
-
-        # Attempt to save crash log to accessible storage
-        try:
-            from kivy.utils import platform
-            if platform == 'android':
-                from jnius import autoclass
-                PythonActivity = autoclass('org.kivy.android.PythonActivity')
-                context = PythonActivity.mActivity
-                log_dir = context.getExternalFilesDir(None).getAbsolutePath()
-            else:
-                log_dir = os.path.abspath(".")
-            
-            with open(os.path.join(log_dir, "crash_log.txt"), "w") as f:
-                f.write(error_msg)
-        except Exception:
-            pass
-        raise
+    except Exception:
+        CrashReporterApp(traceback.format_exc()).run()
