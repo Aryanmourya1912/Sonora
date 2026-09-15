@@ -9,11 +9,14 @@ package.name = sonora
 # (str) Icon of the application
 icon.filename = %(source.dir)s/icon.png
 
+# (str) Presplash of the application (optional loading screen)
+presplash.filename = %(source.dir)s/splash.png
+
 # (str) Package domain (unique package identifier)
 package.domain = org.app
 
 # (str) Application versioning
-version = 0.9
+version = 0.10
 
 # (str) Source code directory
 source.dir = .

@@ -419,6 +419,7 @@ class MusicPlayerApp(MDApp):
             self.play_track(self.audio.queue[index])
 
     # ----------------- THREE-DOTS CONTEXT MENU -----------------
+    # ----------------- THREE-DOTS CONTEXT MENU -----------------
     def _open_song_menu(self, caller_widget):
         if not self.current_track:
             return
@@ -453,11 +454,13 @@ class MusicPlayerApp(MDApp):
         if self.menu:
             self.menu.dismiss()
 
+        # hor_growth="left" and ver_growth="up" prevent screen overflow
         self.menu = MDDropdownMenu(
             caller=caller_widget,
             items=menu_items,
-            width_mult=4.5,
-            border_margin=dp(10),
+            width_mult=4,
+            ver_growth="up",
+            hor_growth="left",
             elevation=4
         )
         self.menu.open()
@@ -611,10 +614,11 @@ class MusicPlayerApp(MDApp):
 
     # ----------------- DYNAMIC HOME & SPEED DIAL -----------------
     def _load_dynamic_home_music(self, query=None):
+        """Loads 24 songs to populate the horizontal scroll."""
         if query:
-            tracks = self.search_engine.search_tracks(query, max_results=9)
+            tracks = self.search_engine.search_tracks(query, max_results=24)
         else:
-            tracks = self.search_engine.get_trending_tracks(count=9)
+            tracks = self.search_engine.get_trending_tracks(count=24)
 
         self.trending_tracks = tracks
         Clock.schedule_once(lambda dt: self._populate_speed_dial(tracks))
