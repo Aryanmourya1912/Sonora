@@ -52,6 +52,7 @@ from stream import AudioController
 from playlist import PlaylistManager
 from download import Downloader
 from ui import PlayerScreen, SongCard
+from notification_helper import PlaybackNotificationManager
 
 
 def format_time(seconds: float) -> str:
@@ -64,6 +65,13 @@ def format_time(seconds: float) -> str:
 
 
 class MusicPlayerApp(MDApp):
+
+    def _get_cache_dir(self) -> str:
+        """Returns a guaranteed writable storage folder for artwork."""
+        cache_path = os.path.join(self.user_data_dir, "thumbs")
+        os.makedirs(cache_path, exist_ok=True)
+        return cache_path
+    
     def build(self):
         self.theme_cls.theme_style = "Dark"
         self.theme_cls.primary_palette = "Amber"
@@ -86,6 +94,32 @@ class MusicPlayerApp(MDApp):
         self.sleep_timer_event = None
         self.sleep_on_track_end = False
 
+        # Initialize notification controller
+        self.notif_mgr = PlaybackNotificationManager()
+
+        # Register background broadcast receiver for notification actions
+        if platform == 'android':
+            from android.broadcast import BroadcastReceiver  # type: ignore
+
+            def _on_notification_action(context, intent):
+                action = intent.getAction() if intent else ""
+                if action == PlaybackNotificationManager.ACTION_TOGGLE:
+                    self._toggle_play()
+                elif action == PlaybackNotificationManager.ACTION_NEXT:
+                    self._play_next()
+                elif action == PlaybackNotificationManager.ACTION_PREV:
+                    self._play_prev()
+
+            self._notif_receiver = BroadcastReceiver(
+                _on_notification_action,
+                actions=[
+                    PlaybackNotificationManager.ACTION_PREV,
+                    PlaybackNotificationManager.ACTION_TOGGLE,
+                    PlaybackNotificationManager.ACTION_NEXT,
+                ]
+            )
+            self._notif_receiver.start()
+
         # State restoration tracking
         self.restored_position = 0.0
         self.is_restored_state = False
@@ -105,9 +139,21 @@ class MusicPlayerApp(MDApp):
 
         return self.screen
 
+    def on_pause(self):
+        # Tells Android to keep the Python runtime running when minimized
+        return True
+
+    def on_resume(self):
+        pass
+
     def on_stop(self):
         """Saves exact state when app closes."""
         self._persist_current_state()
+
+        if hasattr(self, 'notif_mgr'):
+            self.notif_mgr.cancel()
+        if hasattr(self, '_notif_receiver') and self._notif_receiver:
+            self._notif_receiver.stop()
 
     def _persist_current_state(self):
         if self.current_track:
@@ -155,11 +201,9 @@ class MusicPlayerApp(MDApp):
 
         # Load cached artwork if available
         track_id = last_track.get('id', 'temp')
-        cache_file = os.path.abspath(os.path.join("assets", f"{track_id}.jpg"))
+        cache_file = os.path.join(self._get_cache_dir(), f"{track_id}.jpg")
         if os.path.exists(cache_file):
             self._apply_thumbnail(cache_file)
-        elif last_track.get('local_path'):
-            self._apply_thumbnail("assets/placeholder.png")
 
         # Set like button state
         is_fav = self.playlist_mgr.is_favorite(track_id)
@@ -778,26 +822,43 @@ class MusicPlayerApp(MDApp):
         thumb_url = track.get('thumbnail')
         if thumb_url:
             def _download_artwork():
-                if fetch_id != self._current_fetch_id: return
+                if fetch_id != self._current_fetch_id:
+                    return
                 try:
-                    os.makedirs("assets", exist_ok=True)
-                    cache_file = os.path.abspath(os.path.join("assets", f"{track_id}.jpg"))
+                    cache_file = os.path.join(self._get_cache_dir(), f"{track_id}.jpg")
                     if not os.path.exists(cache_file):
-                        urllib.request.urlretrieve(thumb_url, cache_file)
-                    if fetch_id == self._current_fetch_id:
-                        Clock.schedule_once(lambda dt: self._apply_thumbnail(cache_file))
-                except Exception:
-                    pass
+                        import requests
+                        headers = {'User-Agent': 'Mozilla/5.0'}
+                        res = requests.get(thumb_url, headers=headers, timeout=10)
+                        if res.status_code == 200:
+                            with open(cache_file, "wb") as f:
+                                f.write(res.content)
+
+                    if fetch_id == self._current_fetch_id and os.path.exists(cache_file):
+                        Clock.schedule_once(lambda dt: self._apply_thumbnail(cache_file), 0)
+                except Exception as e:
+                    print(f"[Thumbnail Download Error] {e}")
+
             threading.Thread(target=_download_artwork, daemon=True).start()
 
         # Background Audio Fetch
+        # Background Audio Fetch
         def _fetch_audio():
             audio_path, duration = self.search_engine.prepare_audio_file(track['webpage_url'], track_id)
-            if fetch_id != self._current_fetch_id: return
+            if fetch_id != self._current_fetch_id:
+                return
             if audio_path:
-                Clock.schedule_once(lambda dt: self._start_audio_playback(audio_path, duration, track.get('uploader'), start_pos))
+                # 1. Start audio immediately so background playback is uninterrupted
+                self.audio.play_local_file(audio_path, duration=duration, start_pos=start_pos)
+                
+                # 2. Schedule UI text updates (updates when screen is viewed)
+                def _update_ui(dt):
+                    self.screen.mini_artist.text = track.get('uploader') or 'Unknown Artist'
+                    self.screen.time_total.text = format_time(duration)
+                    self._update_play_button_ui(is_playing=True)
+                Clock.schedule_once(_update_ui, 0)
             else:
-                Clock.schedule_once(lambda dt: setattr(self.screen.mini_artist, 'text', 'Playback failed'))
+                Clock.schedule_once(lambda dt: setattr(self.screen.mini_artist, 'text', 'Playback failed'), 0)
 
         threading.Thread(target=_fetch_audio, daemon=True).start()
 
@@ -807,6 +868,15 @@ class MusicPlayerApp(MDApp):
         self.audio.play_local_file(audio_path, duration=duration, start_pos=start_pos)
         self._update_play_button_ui(is_playing=True)
 
+        # Update lockscreen notification with song details
+        if hasattr(self, 'notif_mgr') and self.notif_mgr:
+            track = self.current_track or {}
+            self.notif_mgr.show(
+                title=track.get('title', 'Playing'),
+                artist=uploader or 'Unknown Artist',
+                is_playing=True
+            )
+
     def _apply_thumbnail(self, path: str):
         if not path or not os.path.exists(path):
             return
@@ -815,10 +885,8 @@ class MusicPlayerApp(MDApp):
         self.screen.full_artwork.source = path
 
         try:
-            if getattr(self.screen.mini_artwork, '_container', None) and getattr(self.screen.mini_artwork._container, 'image', None):
-                self.screen.mini_artwork.reload()
-            if getattr(self.screen.full_artwork, '_container', None) and getattr(self.screen.full_artwork._container, 'image', None):
-                self.screen.full_artwork.reload()
+            self.screen.mini_artwork.reload()
+            self.screen.full_artwork.reload()
         except Exception:
             pass
 
@@ -836,6 +904,14 @@ class MusicPlayerApp(MDApp):
         self.screen.btn_mini_play.icon = "pause-circle" if is_playing else "play-circle"
         self.screen.capsule_icon.icon = "pause" if is_playing else "play"
         self.screen.capsule_label.text = "Pause" if is_playing else "Play"
+
+        # Keep lockscreen action button synchronized with UI state
+        if hasattr(self, 'notif_mgr') and self.current_track:
+            self.notif_mgr.show(
+                title=self.current_track.get('title', 'Playing'),
+                artist=self.current_track.get('uploader', 'Unknown Artist'),
+                is_playing=is_playing
+            )
 
     def _play_next(self, *args):
         if self.sleep_on_track_end:
@@ -1014,6 +1090,16 @@ class MusicPlayerApp(MDApp):
             item.add_widget(IconLeftWidget(icon="cellphone-arrow-down"))
             item.bind(on_release=lambda inst, t=track: self._start_new_radio_mix(t))
             self.screen.list_view.add_widget(item)
+
+    # Add to the bottom of build(), right before 'return self.screen'
+        def _background_queue_watcher():
+            import time
+            while True:
+                time.sleep(0.5)
+                if self.audio and self.audio.is_playing and self.audio.is_finished():
+                    self._play_next()
+
+        threading.Thread(target=_background_queue_watcher, daemon=True).start()
 
 
 # ----------------- CRASH REPORTER & ENTRY POINT -----------------

@@ -86,6 +86,16 @@ class AudioController:
             if not player:
                 return False
             try:
+                # Keep CPU awake during playback
+                try:
+                    from jnius import autoclass
+                    PythonActivity = autoclass('org.kivy.android.PythonActivity')
+                    PowerManager = autoclass('android.os.PowerManager')
+                    context = PythonActivity.mActivity.getApplicationContext()
+                    player.setWakeMode(context, PowerManager.PARTIAL_WAKE_LOCK)
+                except Exception as w_err:
+                    print(f"[WakeMode Warning] {w_err}")
+
                 player.reset()
                 player.setDataSource(file_path)
                 player.prepare()

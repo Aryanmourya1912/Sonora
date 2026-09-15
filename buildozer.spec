@@ -16,7 +16,7 @@ presplash.filename = %(source.dir)s/splash.png
 package.domain = org.app
 
 # (str) Application versioning
-version = 0.11
+version = 0.12
 
 # (str) Source code directory
 source.dir = .
@@ -25,13 +25,13 @@ source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,db,ogg,ttf
 
 # (list) Application requirements
-requirements = python3,kivy==2.2.1,kivymd==1.2.0,pillow==9.5.0,mutagen,yt-dlp,urllib3,requests,certifi,sqlite3,pyjnius
+requirements = python3==3.11.9,kivy==2.2.1,kivymd==1.2.0,pillow==9.5.0,mutagen,yt-dlp,urllib3,requests,certifi,sqlite3,pyjnius
 
 # (str) Supported orientation (locks 9:16 vertical display)
 orientation = portrait
 
 # (list) Permissions
-android.permissions = INTERNET,ACCESS_NETWORK_STATE,READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE
+android.permissions = INTERNET,ACCESS_NETWORK_STATE,READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE,WAKE_LOCK,POST_NOTIFICATIONS
 
 # (int) Target Android API
 android.api = 33
