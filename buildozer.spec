@@ -16,7 +16,7 @@ presplash.filename = %(source.dir)s/splash.png
 package.domain = org.app
 
 # (str) Application versioning
-version = 0.5
+version = 0.6
 
 # (str) Source code directory
 source.dir = .
