@@ -1,5 +1,6 @@
 import os
 import sys
+from datetime import datetime
 
 # 1. Image and SSL Environment Fixes
 os.environ['KIVY_IMAGE'] = 'pil,sdl2'
@@ -34,8 +35,10 @@ from kivymd.uix.list import (
     IconRightWidget
 )
 from kivymd.uix.button import MDFlatButton, MDRaisedButton
+from kivy.uix.button import Button
 from kivymd.uix.dialog import MDDialog
 from kivymd.uix.boxlayout import MDBoxLayout
+from kivy.uix.boxlayout import BoxLayout
 from kivymd.uix.scrollview import MDScrollView
 from kivymd.uix.list import MDList
 from kivymd.uix.menu import MDDropdownMenu
@@ -46,6 +49,8 @@ from kivy.animation import Animation
 from kivy.app import App
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.label import Label
+from kivy.uix.modalview import ModalView
+from kivy.uix.textinput import TextInput
 
 from search import SearchEngine
 from stream import AudioController
@@ -64,6 +69,70 @@ def format_time(seconds: float) -> str:
     return f"{mins}:{secs:02d}"
 
 
+# ==========================================
+# Global Background Thread Crash Handler
+# ==========================================
+def display_thread_crash(error_text: str):
+    """Displays a scrollable, copyable crash pop-up over the active screen."""
+    popup = ModalView(size_hint=(0.92, 0.85), auto_dismiss=True)
+    box = TextInput(
+        text=f"--- THREAD RUNTIME ERROR ---\n\n{error_text}",
+        readonly=True,
+        font_size="12sp",
+        background_color=(0.1, 0.1, 0.1, 0.95),
+        foreground_color=(1.0, 0.4, 0.4, 1),
+        size_hint=(1, 1),
+        padding=[15, 20, 15, 15],
+    )
+    popup.add_widget(box)
+    popup.open()
+
+def write_crash_log(error_text: str):
+    """Appends crash tracebacks to crash.log inside user_data_dir."""
+    try:
+        app = MDApp.get_running_app()
+        if app and hasattr(app, 'user_data_dir'):
+            base_dir = app.user_data_dir
+        else:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+
+        log_path = os.path.join(base_dir, "crash.log")
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"\n{'='*50}\n[{timestamp}]\n{error_text}\n{'='*50}\n")
+    except Exception as log_err:
+        print(f"[Crash File Logger Failed] {log_err}")
+
+
+def global_thread_exception_handler(args):
+    """Intercepts unhandled exceptions across all background threads."""
+    err_msg = "".join(
+        traceback.format_exception(
+            args.exc_type, args.exc_value, args.exc_traceback
+        )
+    )
+    thread_name = getattr(args.thread, "name", "Unknown Thread")
+    full_log = f"Thread: {thread_name}\n\n{err_msg}"
+
+    print(f"[Thread Crash Intercepted] {full_log}")
+
+    # 1. Write traceback offline to phone storage
+    write_crash_log(full_log)
+
+    # 2. Render visually on the phone screen
+    Clock.schedule_once(lambda dt: display_thread_crash(full_log), 0)
+
+
+# Bind hook at startup
+threading.excepthook = global_thread_exception_handler
+
+
+# ==========================================
+# Main Application Class
+# ==========================================
+
+
 class MusicPlayerApp(MDApp):
 
     def _get_cache_dir(self) -> str:
@@ -71,8 +140,99 @@ class MusicPlayerApp(MDApp):
         cache_path = os.path.join(self.user_data_dir, "thumbs")
         os.makedirs(cache_path, exist_ok=True)
         return cache_path
+
+    def open_crash_log_viewer(self):
+        """Opens a modal dialog showing recorded crash logs with an option to wipe them."""
+        log_path = os.path.join(self.user_data_dir, "crash.log")
+
+        # Read existing file contents
+        content_text = "No crash logs recorded yet."
+        if os.path.exists(log_path):
+            try:
+                with open(log_path, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+                    content_text = content if content else "crash.log is currently empty."
+            except Exception as read_err:
+                content_text = f"Failed to read crash log: {read_err}"
+
     
+
+        # Outer modal container
+        modal = ModalView(size_hint=(0.92, 0.85), auto_dismiss=True)
+        container = BoxLayout(orientation="vertical", spacing=10, padding=12)
+
+        # Log content text box
+        text_box = TextInput(
+            text=content_text,
+            readonly=True,
+            font_size="12sp",
+            background_color=(0.10, 0.10, 0.10, 1),
+            foreground_color=(0.95, 0.95, 0.95, 1),
+            size_hint=(1, 0.88),
+            padding=[12, 12, 12, 12],
+        )
+
+        # Action button container
+        btn_bar = BoxLayout(orientation="horizontal", size_hint=(1, 0.12), spacing=10)
+
+        def _clear_logs(instance):
+            try:
+                if os.path.exists(log_path):
+                    os.remove(log_path)
+                text_box.text = "crash.log cleared successfully."
+            except Exception as del_err:
+                text_box.text = f"Failed to delete crash log: {del_err}"
+
+        btn_clear = Button(
+            text="Clear Logs",
+            background_color=(0.85, 0.25, 0.25, 1),
+            size_hint=(0.5, 1),
+        )
+        btn_clear.bind(on_release=_clear_logs)
+
+        btn_close = Button(
+            text="Close",
+            background_color=(0.25, 0.25, 0.25, 1),
+            size_hint=(0.5, 1),
+        )
+        btn_close.bind(on_release=modal.dismiss)
+
+        btn_bar.add_widget(btn_clear)
+        btn_bar.add_widget(btn_close)
+
+        container.add_widget(text_box)
+        container.add_widget(btn_bar)
+        modal.add_widget(container)
+
+        modal.open()
+
+    def _trigger_menu_action(self, action_func):
+        if hasattr(self, 'menu') and self.menu:
+            self.menu.dismiss()
+        action_func()
+
+    def _build_crash_screen(self, error_trace: str):
+        """Displays full traceback in a high-contrast, copyable text box."""
+        # Log to file immediately
+        write_crash_log(f"Main Thread Startup Crash:\n\n{error_trace}")
+
+        return TextInput(
+            text=f"--- RUNTIME CRASH DETECTED ---\n\n{error_trace}",
+            readonly=True,
+            font_size="13sp",
+            background_color=(0.08, 0.08, 0.08, 1),
+            foreground_color=(1.0, 0.35, 0.35, 1),
+            size_hint=(1, 1),
+            padding=[20, 40, 20, 20],
+        )
+
     def build(self):
+        try:
+            return self._safe_build()
+        except Exception:
+            return self._build_crash_screen(traceback.format_exc())
+
+    def _safe_build(self):
         self.theme_cls.theme_style = "Dark"
         self.theme_cls.primary_palette = "Amber"
 
@@ -169,6 +329,7 @@ class MusicPlayerApp(MDApp):
         threading.Thread(target=self._load_dynamic_home_music, daemon=True).start()
 
         return self.screen
+        
 
     def on_pause(self):
         # Tells Android to keep the Python runtime running when minimized
@@ -502,6 +663,11 @@ class MusicPlayerApp(MDApp):
         menu_items = [
             {
                 "viewclass": "OneLineListItem",
+                "text": "View Crash Logs",
+                "on_release": lambda: self._trigger_menu_action(self.open_crash_log_viewer),
+            },
+            {
+                "viewclass": "OneLineListItem",
                 "text": "Download Track",
                 "height": dp(46),
                 "on_release": lambda: self._handle_menu_action("download"),
@@ -831,6 +997,13 @@ class MusicPlayerApp(MDApp):
         self._current_fetch_id += 1
         fetch_id = self._current_fetch_id
 
+        # Artwork Fetch Thread
+        threading.Thread(
+            target=_download_artwork,
+            name="ArtworkDownloadThread",
+            daemon=True
+        ).start()
+
         # Local Playback
         if track.get('local_path') and os.path.exists(track['local_path']):
             self.screen.mini_artwork.source = "assets/placeholder.png"
@@ -847,7 +1020,7 @@ class MusicPlayerApp(MDApp):
             self.audio.play_local_file(track['local_path'], duration=dur, start_pos=start_pos)
             self._update_play_button_ui(is_playing=True)
             return
-
+        
         # Artwork Fetch
         track_id = track.get('id', 'temp')
         thumb_url = track.get('thumbnail')
@@ -872,7 +1045,6 @@ class MusicPlayerApp(MDApp):
 
             threading.Thread(target=_download_artwork, daemon=True).start()
 
-        # Background Audio Fetch
         # Background Audio Fetch
         def _fetch_audio():
             audio_path, duration = self.search_engine.prepare_audio_file(track['webpage_url'], track_id)
