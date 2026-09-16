@@ -2,8 +2,24 @@ import os
 import random
 from kivy.utils import platform
 
-# Lazy-loaded Android MediaPlayer class handle
 AndroidMediaPlayer = None
+
+if platform == 'android':
+    from jnius import PythonJavaClass, java_method, autoclass  # type: ignore
+
+    class AndroidCompletionListener(PythonJavaClass):
+        """Hardware callback that triggers immediately when a track ends."""
+        __javainterfaces__ = ['android/media/MediaPlayer$OnCompletionListener']
+        __javacontext__ = 'app'
+
+        def __init__(self, callback):
+            super().__init__()
+            self.callback = callback
+
+        @java_method('(Landroid/media/MediaPlayer;)V')
+        def onCompletion(self, mp):
+            if self.callback:
+                self.callback()
 
 
 def get_android_media_player():
@@ -18,7 +34,7 @@ def get_android_media_player():
 
 
 class AudioController:
-    def __init__(self):
+    def __init__(self, on_complete_callback=None):
         self.queue = []
         self._unshuffled_queue = []
         self.current_index = -1
@@ -28,32 +44,72 @@ class AudioController:
         self.is_shuffled = False
         self.current_duration = 0.0
         self.seek_offset = 0.0
+        self.on_complete_callback = on_complete_callback
 
         # Hardware handles
         self.android_player = None
         self.desktop_sound = None
         self._pause_pos = 0.0
+        self._wake_lock = None
+        self._completion_listener = None
+
+    def _acquire_wake_lock(self):
+        """Prevents Android from putting the CPU to sleep during downloads and playback."""
+        if platform != 'android' or self._wake_lock:
+            return
+        try:
+            from jnius import autoclass
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+            PowerManager = autoclass('android.os.PowerManager')
+            Context = autoclass('android.content.Context')
+
+            activity = PythonActivity.mActivity
+            if activity:
+                pm = activity.getSystemService(Context.POWER_SERVICE)
+                self._wake_lock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Sonora::AudioPlaybackLock")
+                self._wake_lock.acquire()
+        except Exception as e:
+            print(f"[WakeLock Acquire Error] {e}")
+
+    def _release_wake_lock(self):
+        if self._wake_lock:
+            try:
+                if self._wake_lock.isHeld():
+                    self._wake_lock.release()
+            except Exception:
+                pass
+            self._wake_lock = None
 
     def load_queue(self, tracks: list, start_index: int = 0):
-        """Loads a song playlist into the active queue."""
         self._unshuffled_queue = list(tracks)
         self.queue = list(tracks)
         self.current_index = max(0, min(start_index, len(self.queue) - 1)) if self.queue else -1
 
     def set_repeat_mode(self, mode: str):
-        """Sets repeat mode: 'off', 'all', or 'one'."""
         self.repeat_mode = mode
 
     def _get_player(self):
-        """Instantiates Android MediaPlayer on demand."""
         if platform == 'android' and self.android_player is None:
             MP = get_android_media_player()
             if MP:
                 try:
                     self.android_player = MP()
+                    if self.on_complete_callback:
+                        self._completion_listener = AndroidCompletionListener(self._handle_hardware_completion)
+                        self.android_player.setOnCompletionListener(self._completion_listener)
                 except Exception as e:
                     print(f"[Player Instantiation Error] {e}")
         return self.android_player
+
+    def _handle_hardware_completion(self):
+        if self.repeat_mode == "one":
+            if self.android_player:
+                self.android_player.seekTo(0)
+                self.android_player.start()
+            return
+
+        if self.on_complete_callback:
+            self.on_complete_callback()
 
     def stop(self):
         self.is_playing = False
@@ -75,6 +131,8 @@ class AudioController:
                 pass
             self.desktop_sound = None
 
+        self._release_wake_lock()
+
     def play_local_file(self, file_path: str, duration: float = 0.0, start_pos: float = 0.0) -> bool:
         self.stop()
         self.current_duration = float(duration or 0.0)
@@ -82,29 +140,30 @@ class AudioController:
         if not file_path or not os.path.exists(file_path):
             return False
 
+        self._acquire_wake_lock()
+
         if platform == 'android':
             player = self._get_player()
             if not player:
                 return False
             try:
-                # 1. Reset state before setting new data source
                 player.reset()
 
-                # 2. Prevent CPU sleep while music plays in background
+                # --- INSERTED: Tag stream as official Media/Music for Mini Capsule & Status Bar ---
                 try:
-                    from jnius import autoclass  # type: ignore
+                    from jnius import autoclass
+                    AudioAttributes = autoclass('android.media.AudioAttributes')
+                    AudioAttributesBuilder = autoclass('android.media.AudioAttributes$Builder')
 
-                    PythonActivity = autoclass('org.kivy.android.PythonActivity')
-                    PowerManager = autoclass('android.os.PowerManager')
-                    
-                    activity = PythonActivity.mActivity
-                    if activity:
-                        context = activity.getApplicationContext()
-                        player.setWakeMode(context, PowerManager.PARTIAL_WAKE_LOCK)
-                except Exception as wake_err:
-                    print(f"[WakeLock Warning] {wake_err}")
+                    attrs = AudioAttributesBuilder() \
+                        .setUsage(AudioAttributes.USAGE_MEDIA) \
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC) \
+                        .build()
+                    player.setAudioAttributes(attrs)
+                except Exception as attr_err:
+                    print(f"[AudioAttributes Warning] {attr_err}")
+                # ---------------------------------------------------------------------------------
 
-                # 3. Load audio file and prepare
                 player.setDataSource(file_path)
                 player.prepare()
 
@@ -122,6 +181,7 @@ class AudioController:
             except Exception as err:
                 print(f"[Android Media Play Error] {err}")
                 self.is_playing = False
+                self._release_wake_lock()
                 return False
         else:
             try:
@@ -147,7 +207,9 @@ class AudioController:
                     self.android_player.pause()
                     self.is_playing = False
                     self.is_paused = True
+                    self._release_wake_lock()
                 elif self.is_paused:
+                    self._acquire_wake_lock()
                     self.android_player.start()
                     self.is_playing = True
                     self.is_paused = False
@@ -238,21 +300,3 @@ class AudioController:
                 pos = 0.0
 
         return max(0.0, min(pos, dur)), dur
-
-    def is_finished(self) -> bool:
-        """Determines if the active track completed, guarding against startup buffering false-positives."""
-        if not self.is_playing or self.is_paused:
-            return False
-
-        if platform == 'android' and self.android_player:
-            try:
-                pos, dur = self.get_progress()
-                # Guard: Do not mark finished if song just started buffering (< 1.5s)
-                if pos < 1.5:
-                    return False
-                return not self.android_player.isPlaying() and (pos >= dur - 2.0)
-            except Exception:
-                return False
-        elif self.desktop_sound:
-            return self.desktop_sound.state == 'stop'
-        return False

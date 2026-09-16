@@ -2,9 +2,6 @@ import os
 import sys
 import traceback
 
-# =========================================================
-# 0. FAILSAFE BOOTSTRAPPER (Runs before ANY heavy imports)
-# =========================================================
 from kivy.app import App
 from kivy.core.window import Window
 from kivy.uix.scrollview import ScrollView
@@ -12,7 +9,7 @@ from kivy.uix.label import Label
 
 
 class CrashReporterApp(App):
-    """Guaranteed fallback app that displays tracebacks on the mobile screen."""
+    """Guaranteed fallback app displaying tracebacks on the mobile screen."""
     def __init__(self, error_msg: str, **kwargs):
         super().__init__(**kwargs)
         self.error_msg = error_msg
@@ -36,7 +33,6 @@ class CrashReporterApp(App):
 
 
 def _run_app():
-    # 1. Image and SSL Environment Fixes
     os.environ['KIVY_IMAGE'] = 'pil,sdl2'
     try:
         import certifi
@@ -62,18 +58,16 @@ def _run_app():
     from kivymd.uix.list import (
         TwoLineAvatarIconListItem,
         OneLineIconListItem,
-        OneLineListItem,
         IconLeftWidget,
         IconRightWidget
     )
-    from kivymd.uix.button import MDFlatButton, MDRaisedButton
+    from kivymd.uix.button import MDFlatButton, MDRaisedButton, MDIconButton
     from kivy.uix.button import Button
     from kivymd.uix.dialog import MDDialog
     from kivymd.uix.boxlayout import MDBoxLayout
     from kivy.uix.boxlayout import BoxLayout
     from kivymd.uix.scrollview import MDScrollView
     from kivymd.uix.list import MDList
-    from kivymd.uix.menu import MDDropdownMenu
     from kivy.core.clipboard import Clipboard
     from kivy.metrics import dp
     from kivy.clock import Clock
@@ -187,27 +181,12 @@ def _run_app():
             modal.add_widget(container)
             modal.open()
 
-        def _trigger_menu_action(self, action_func):
-            menu = getattr(self, 'menu', None)
-            if menu:
-                menu.dismiss()
-            action_func()
-
-        def _request_android_permissions(self):
-            """Triggers the Android 13+ (API 33) notification permission prompt."""
-            if platform == 'android':
-                try:
-                    from android.permissions import request_permissions  # type: ignore
-                    request_permissions(['android.permission.POST_NOTIFICATIONS'])
-                except Exception as pe:
-                    print(f"[Permission Request Error] {pe}")
-
         def build(self):
             self.theme_cls.theme_style = "Dark"
             self.theme_cls.primary_palette = "Amber"
 
             self.search_engine = SearchEngine()
-            self.audio = AudioController()
+            self.audio = AudioController(on_complete_callback=self._on_hardware_track_ended)
             self.playlist_mgr = PlaylistManager()
             self.downloader = Downloader()
 
@@ -216,7 +195,9 @@ def _run_app():
             self._current_fetch_id = 0
             self._is_user_seeking = False
             self.trending_tracks = []
-            self.menu = None
+            self.search_history = [
+                "Trending Indian hits", "Phonk workout", "Hindi lo-fi chill", "Bollywood romantic hits"
+            ]
             self.details_dialog = None
             self.queue_dialog = None
             self.history_dialog = None
@@ -224,8 +205,14 @@ def _run_app():
             self.sleep_timer_event = None
             self.sleep_on_track_end = False
 
-            self.notif_mgr = PlaybackNotificationManager()
+            # Notification Manager with Bluetooth Earbud Callbacks
+            self.notif_mgr = PlaybackNotificationManager(
+                on_toggle=self._toggle_play,
+                on_next=self._play_next,
+                on_prev=self._play_prev
+            )
 
+            # Android Broadcast Receiver for headset actions
             if platform == 'android':
                 try:
                     from android.broadcast import BroadcastReceiver  # type: ignore
@@ -251,12 +238,6 @@ def _run_app():
                                 code = key_event.getKeyCode()
                                 if code in (KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_HEADSETHOOK):
                                     self._toggle_play()
-                                elif code == KeyEvent.KEYCODE_MEDIA_PLAY:
-                                    if not self.audio.is_playing:
-                                        self._toggle_play()
-                                elif code == KeyEvent.KEYCODE_MEDIA_PAUSE:
-                                    if self.audio.is_playing:
-                                        self._toggle_play()
                                 elif code == KeyEvent.KEYCODE_MEDIA_NEXT:
                                     self._play_next()
                                 elif code == KeyEvent.KEYCODE_MEDIA_PREVIOUS:
@@ -287,10 +268,31 @@ def _run_app():
             Clock.schedule_interval(self._update_progress, 0.25)
             threading.Thread(target=self._load_dynamic_home_music, daemon=True).start()
 
-                # Request Android 13+ notification permissions
+            # Request notification permissions on Android 13+
             Clock.schedule_once(lambda dt: self._request_android_permissions(), 0.8)
 
             return self.screen
+
+        def _request_android_permissions(self):
+            if platform == 'android':
+                try:
+                    from android.permissions import request_permissions  # type: ignore
+                    request_permissions(['android.permission.POST_NOTIFICATIONS'])
+                except Exception as pe:
+                    print(f"[Permission Request Error] {pe}")
+
+        def _on_hardware_track_ended(self):
+            """Called directly by Android MediaPlayer when track completes in the background."""
+            if self.sleep_on_track_end:
+                self._on_sleep_timer_triggered(None)
+                return
+
+            track = self.audio.next_track()
+            if track:
+                self.play_track(track)
+            else:
+                self.audio.stop()
+                self._update_play_button_ui(is_playing=False)
 
         def _safe_restore_state(self):
             try:
@@ -307,7 +309,7 @@ def _run_app():
         def on_stop(self):
             self._persist_current_state()
             if hasattr(self, 'notif_mgr') and self.notif_mgr:
-                self.notif_mgr.cancel()
+                self.notif_mgr.release()
             if hasattr(self, '_notif_receiver') and self._notif_receiver:
                 self._notif_receiver.stop()
 
@@ -363,367 +365,94 @@ def _run_app():
             self._update_like_button_ui(is_fav)
 
         def _bind_events(self):
-            self.screen.nav_home.on_release = self._show_home_tab
-            self.screen.nav_search.on_release = self._show_search_tab
-            self.screen.nav_library.on_release = self._show_library_tab
+            # Bottom Navigation Items
+            self.screen.nav_home.bind(on_release=lambda x: self._show_home_tab())
+            self.screen.nav_search.bind(on_release=lambda x: self._show_search_tab())
+            self.screen.nav_library.bind(on_release=lambda x: self._show_library_tab())
 
             self.screen.btn_refresh.on_release = self._on_refresh_home
             self.screen.btn_history.on_release = self._show_history_dialog
 
+            # Search Bar bindings (Image 7)
+            self.screen.btn_search_back.on_release = self._show_home_tab
+            self.screen.btn_search_clear.on_release = self._clear_search_input
             self.screen.search_input.bind(on_text_validate=self._perform_search)
-            self.screen.btn_search_go.on_release = self._perform_search
 
+            # Category Chips
             for chip in self.screen.chips_box.children:
                 chip.bind(on_release=lambda btn: self._on_chip_selected(btn.text))
 
-            self.screen.mini_artwork.bind(on_touch_down=self._on_mini_content_touch)
-            self.screen.mini_text_box.bind(on_touch_down=self._on_mini_content_touch)
+            # Mini Player interactions
+            self.screen.mini_card.bind(on_release=self._open_full_player)
             self.screen.btn_close_full.on_release = self._close_full_player
-            self.screen.top_drag_bar.bind(
-                on_touch_down=lambda inst, touch: self._close_full_player() if inst.collide_point(*touch.pos) else False
-            )
 
             self.screen.btn_mini_play.on_release = self._toggle_play
             self.screen.btn_mini_next.on_release = self._play_next
-            self.screen.btn_mini_more.on_release = lambda: self._open_song_menu(self.screen.btn_mini_more)
+            self.screen.btn_mini_more.on_release = self._open_bottom_sheet
 
+            # Full Screen Controls (Image 2)
+            self.screen.btn_full_prev_card.bind(on_release=lambda x: self._play_prev())
             self.screen.btn_full_play_capsule.bind(on_release=lambda x: self._toggle_play())
             self.screen.capsule_icon.on_release = self._toggle_play
-            self.screen.btn_full_prev.on_release = self._play_prev
-            self.screen.btn_full_next.on_release = self._play_next
-            self.screen.btn_full_shuffle.on_release = self._toggle_shuffle
-            self.screen.btn_full_repeat.on_release = self._cycle_repeat
-            self.screen.btn_like.on_release = self._toggle_like
-            self.screen.btn_share.on_release = self._copy_current_link
-            self.screen.btn_more.on_release = lambda: self._open_song_menu(self.screen.btn_more)
+            self.screen.btn_full_next_card.bind(on_release=lambda x: self._play_next())
+
+            self.screen.btn_share_card.bind(on_release=lambda x: self._copy_current_link())
+            self.screen.btn_like_card.bind(on_release=lambda x: self._toggle_like())
 
             self.screen.btn_queue.on_release = self._show_queue_dialog
             self.screen.btn_timer.on_release = self._open_sleep_timer_dialog
+            self.screen.btn_full_shuffle.on_release = self._toggle_shuffle
+            self.screen.btn_full_repeat.on_release = self._cycle_repeat
+            self.screen.btn_more_circle.bind(on_release=lambda x: self._open_bottom_sheet())
 
+            # Bottom Sheet Item bindings (Image 4 & 5)
+            bs = self.screen.bottom_sheet
+            bs.btn_radio.bind(on_release=lambda x: self._sheet_action("radio"))
+            bs.btn_add_playlist.bind(on_release=lambda x: self._sheet_action("playlist"))
+            bs.btn_copy.bind(on_release=lambda x: self._sheet_action("copy"))
+
+            bs.item_artist.bind(on_release=lambda x: self._sheet_action("artist"))
+            bs.item_album.bind(on_release=lambda x: self._sheet_action("album"))
+            bs.item_library.bind(on_release=lambda x: self._sheet_action("library"))
+            bs.item_speed_dial.bind(on_release=lambda x: self._sheet_action("speed_dial"))
+            bs.item_download.bind(on_release=lambda x: self._sheet_action("download"))
+            bs.item_details.bind(on_release=lambda x: self._sheet_action("details"))
+            bs.item_logs.bind(on_release=lambda x: self._sheet_action("logs"))
+
+            # Sliders
             for slider in (self.screen.mini_progress, self.screen.full_slider):
                 slider.bind(on_touch_down=self._on_slider_touch_down)
                 slider.bind(on_touch_up=self._on_slider_touch_up)
                 slider.bind(value=self._on_slider_value_change)
 
-        def _on_mini_content_touch(self, instance, touch):
-            if instance.collide_point(*touch.pos):
-                self._open_full_player()
-                return True
-            return False
+        # ----------------- BOTTOM SHEET CONTROLLER -----------------
+        def _open_bottom_sheet(self):
+            if self.current_track:
+                self.screen.bottom_sheet.item_artist.children[0].children[0].children[0].text = self.current_track.get('uploader', 'View artist')
+            self.screen.bottom_sheet.open_half()
 
-        def _show_history_dialog(self):
-            recent_tracks = self.playlist_mgr.get_history()
-            scroll = MDScrollView(size_hint=(1, None), height=dp(340))
-            list_widget = MDList()
-            scroll.add_widget(list_widget)
-
-            if not recent_tracks:
-                list_widget.add_widget(OneLineIconListItem(text="No recently played songs yet!"))
-            else:
-                for idx, track in enumerate(recent_tracks):
-                    item = TwoLineAvatarIconListItem(
-                        text=track.get('title', 'Unknown')[:34],
-                        secondary_text=track.get('uploader', 'Unknown')[:26]
-                    )
-                    item.add_widget(IconLeftWidget(icon="history", theme_text_color="Custom", text_color=(0.92, 0.82, 0.60, 1)))
-                    item.bind(on_release=lambda inst, t=track: self._play_from_history(t))
-                    list_widget.add_widget(item)
-
-            if self.history_dialog:
-                self.history_dialog.dismiss()
-
-            self.history_dialog = MDDialog(
-                title="Recently Played (Last 20)",
-                type="custom",
-                content_cls=scroll,
-                buttons=[MDRaisedButton(text="CLOSE", md_bg_color=(0.25, 0.24, 0.17, 1), on_release=lambda x: self.history_dialog.dismiss())],
-            )
-            self.history_dialog.open()
-
-        def _play_from_history(self, track: dict):
-            if self.history_dialog:
-                self.history_dialog.dismiss()
-            self._start_new_radio_mix(track)
-
-        def _open_sleep_timer_dialog(self):
-            box = MDBoxLayout(orientation="vertical", adaptive_height=True, spacing=dp(4))
-            options = [
-                ("15 Minutes", 15),
-                ("30 Minutes (Recommended)", 30),
-                ("45 Minutes", 45),
-                ("60 Minutes", 60),
-                ("End of Current Track", "end_track"),
-            ]
-            if self.sleep_timer_event or self.sleep_on_track_end:
-                options.append(("Turn Off Timer", "cancel"))
-
-            for label, val in options:
-                is_cancel = (val == "cancel")
-                btn = MDRaisedButton(
-                    text=label, size_hint_x=1, elevation=0,
-                    md_bg_color=(0.35, 0.15, 0.15, 1) if is_cancel else (0.22, 0.21, 0.15, 1),
-                    text_color=(1, 0.6, 0.6, 1) if is_cancel else (0.95, 0.95, 0.95, 1),
-                    on_release=lambda inst, v=val: self._handle_timer_selection(v)
-                )
-                box.add_widget(btn)
-
-            if self.sleep_timer_dialog:
-                self.sleep_timer_dialog.dismiss()
-
-            self.sleep_timer_dialog = MDDialog(
-                title="Sleep Timer",
-                type="custom",
-                content_cls=box,
-                buttons=[MDFlatButton(text="DISMISS", on_release=lambda x: self.sleep_timer_dialog.dismiss())],
-            )
-            self.sleep_timer_dialog.open()
-
-        def _handle_timer_selection(self, val):
-            if self.sleep_timer_dialog:
-                self.sleep_timer_dialog.dismiss()
-
-            if self.sleep_timer_event:
-                self.sleep_timer_event.cancel()
-                self.sleep_timer_event = None
-            self.sleep_on_track_end = False
-
-            if val == "cancel":
-                self.screen.btn_timer.icon = "moon-waning-crescent"
-                self.screen.btn_timer.text_color = (0.8, 0.8, 0.8, 1)
-                self._set_artist_text("Sleep timer canceled")
-                return
-
-            if val == "end_track":
-                self.sleep_on_track_end = True
-                self.screen.btn_timer.icon = "bed-clock"
-                self.screen.btn_timer.text_color = (0.92, 0.82, 0.60, 1)
-                self._set_artist_text("Playback will stop after this song")
-                return
-
-            seconds = val * 60
-            self.sleep_timer_event = Clock.schedule_once(self._on_sleep_timer_triggered, seconds)
-            self.screen.btn_timer.icon = "bed-clock"
-            self.screen.btn_timer.text_color = (0.92, 0.82, 0.60, 1)
-            self._set_artist_text(f"Sleep timer set for {val} minutes")
-
-        def _on_sleep_timer_triggered(self, dt):
-            self.audio.stop()
-            self._update_play_button_ui(is_playing=False)
-            self.sleep_timer_event = None
-            self.sleep_on_track_end = False
-            self.screen.btn_timer.icon = "moon-waning-crescent"
-            self.screen.btn_timer.text_color = (0.8, 0.8, 0.8, 1)
-            self._set_artist_text("Sleep timer finished. Playback stopped.")
-
-        def _fetch_similar_and_build_loop_queue(self, seed_track: dict):
-            def _worker():
-                try:
-                    similar = self.search_engine.get_similar_tracks(seed_track, count=8)
-                    full_queue = [seed_track] + similar
-
-                    def _apply_queue(dt):
-                        self.audio.load_queue(full_queue, start_index=0)
-                        self.audio.set_repeat_mode("all")
-                        self.screen.btn_full_repeat.icon = "repeat"
-                        self.screen.btn_full_repeat.text_color = (0.92, 0.82, 0.60, 1)
-                        if self.queue_dialog:
-                            self._populate_queue_list_widget(full_queue)
-
-                    Clock.schedule_once(_apply_queue)
-                except Exception as e:
-                    print(f"[Queue Worker Error] {e}")
-
-            threading.Thread(target=_worker, daemon=True).start()
-
-        def _show_queue_dialog(self):
-            scroll = MDScrollView(size_hint=(1, None), height=dp(320))
-            self.queue_list_widget = MDList()
-            scroll.add_widget(self.queue_list_widget)
-            self._populate_queue_list_widget(self.audio.queue)
-
-            if self.queue_dialog:
-                self.queue_dialog.dismiss()
-
-            self.queue_dialog = MDDialog(
-                title="Up Next (Similar Mix - Looping)",
-                type="custom",
-                content_cls=scroll,
-                buttons=[MDRaisedButton(text="CLOSE", md_bg_color=(0.25, 0.24, 0.17, 1), on_release=lambda x: self.queue_dialog.dismiss())],
-            )
-            self.queue_dialog.open()
-
-        def _populate_queue_list_widget(self, queue: list[dict]):
-            if not hasattr(self, 'queue_list_widget') or not self.queue_list_widget:
-                return
-
-            self.queue_list_widget.clear_widgets()
-            if not queue:
-                self.queue_list_widget.add_widget(OneLineIconListItem(text="Loading similar tracks..."))
-                return
-
-            for idx, track in enumerate(queue):
-                is_active = (idx == self.audio.current_index)
-                title = track.get('title', 'Unknown')[:34]
-                artist = track.get('uploader', 'Unknown')[:26]
-
-                item = TwoLineAvatarIconListItem(
-                    text=f"{'▶ ' if is_active else ''}{title}",
-                    secondary_text=artist
-                )
-                icon = "play-circle" if is_active else "music-note"
-                icon_color = (0.92, 0.82, 0.60, 1) if is_active else (0.6, 0.6, 0.6, 1)
-                item.add_widget(IconLeftWidget(icon=icon, theme_text_color="Custom", text_color=icon_color))
-                item.bind(on_release=lambda inst, i=idx: self._select_queue_item(i))
-                self.queue_list_widget.add_widget(item)
-
-        def _select_queue_item(self, index: int):
-            if self.queue_dialog:
-                self.queue_dialog.dismiss()
-            if 0 <= index < len(self.audio.queue):
-                self.audio.current_index = index
-                self.play_track(self.audio.queue[index])
-
-        def _open_song_menu(self, caller_widget):
-            if not self.current_track:
-                return
-
-            menu_items = [
-                {
-                    "viewclass": "OneLineListItem",
-                    "text": "View Crash Logs",
-                    "on_release": lambda: self._trigger_menu_action(self.open_crash_log_viewer),
-                },
-                {
-                    "viewclass": "OneLineListItem",
-                    "text": "Download Track",
-                    "height": dp(46),
-                    "on_release": lambda: self._handle_menu_action("download"),
-                },
-                {
-                    "viewclass": "OneLineListItem",
-                    "text": "Song Details",
-                    "height": dp(46),
-                    "on_release": lambda: self._handle_menu_action("details"),
-                },
-                {
-                    "viewclass": "OneLineListItem",
-                    "text": "Add to Playlist",
-                    "height": dp(46),
-                    "on_release": lambda: self._handle_menu_action("playlist"),
-                },
-                {
-                    "viewclass": "OneLineListItem",
-                    "text": "Copy Song Link",
-                    "height": dp(46),
-                    "on_release": lambda: self._handle_menu_action("copy"),
-                }
-            ]
-
-            if self.menu:
-                self.menu.dismiss()
-
-            self.menu = MDDropdownMenu(
-                caller=caller_widget,
-                items=menu_items,
-                width_mult=4,
-                ver_growth="up",
-                hor_growth="left",
-                elevation=4
-            )
-            self.menu.open()
-
-        def _handle_menu_action(self, action: str):
-            if self.menu:
-                self.menu.dismiss()
-
-            if action == "download":
-                self._download_active_track()
-            elif action == "details":
-                self._show_song_details()
+        def _sheet_action(self, action: str):
+            self.screen.bottom_sheet.close()
+            if action == "radio" and self.current_track:
+                self._start_new_radio_mix(self.current_track)
             elif action == "playlist":
                 self._open_add_to_playlist_dialog()
             elif action == "copy":
                 self._copy_current_link()
-
-        def _download_active_track(self):
-            if not self.current_track:
-                return
-
-            if self.current_track.get('local_path') and os.path.exists(self.current_track['local_path']):
-                self._set_artist_text("Already available offline")
-                return
-
-            title = self.current_track.get('title', 'Track')[:24]
-            self._set_artist_text(f"Downloading: {title}...")
-
-            def _worker():
-                url = self.current_track.get('webpage_url') or f"https://www.youtube.com/watch?v={self.current_track.get('id')}"
-                success = self.downloader.download_track(url, self.current_track.get('title', 'track'))
-                Clock.schedule_once(lambda dt: self._set_artist_text(
-                    "Saved to downloads/" if success else "Download failed"
-                ))
-
-            threading.Thread(target=_worker, daemon=True).start()
-
-        def _trigger_download(self, track_data: dict):
-            self._set_artist_text("Downloading song...")
-
-            def _worker():
-                url = track_data.get('webpage_url') or f"https://www.youtube.com/watch?v={track_data.get('id')}"
-                success = self.downloader.download_track(url, track_data.get('title', 'track'))
-                Clock.schedule_once(lambda dt: self._set_artist_text(
-                    "Download finished!" if success else "Download failed"
-                ))
-
-            threading.Thread(target=_worker, daemon=True).start()
-
-        def _set_artist_text(self, text: str):
-            self.screen.mini_artist.text = text
-            self.screen.full_artist.text = text
-
-        def _copy_current_link(self):
-            if not self.current_track:
-                return
-            url = self.current_track.get('webpage_url') or f"https://www.youtube.com/watch?v={self.current_track.get('id', '')}"
-            Clipboard.copy(url)
-            self._set_artist_text("Link copied to clipboard!")
-
-        def _show_song_details(self):
-            if not self.current_track:
-                return
-
-            track = self.current_track
-            dur = float(self.audio.current_duration or track.get('duration') or 0.0)
-            is_offline = bool(track.get('local_path') and os.path.exists(track['local_path']))
-            status_text = "Offline Storage (Local)" if is_offline else "Online Stream (Vorbis OGG / 192kbps)"
-            source_path = track.get('local_path') if is_offline else track.get('webpage_url', 'YouTube Music')
-
-            container = MDBoxLayout(orientation="vertical", spacing=dp(8), padding=[dp(8), dp(4), dp(8), dp(4)], adaptive_height=True)
-            detail_fields = [
-                ("Track Title", track.get('title', 'Unknown Track')),
-                ("Artist / Channel", track.get('uploader', 'Unknown Artist')),
-                ("Duration", format_time(dur)),
-                ("Audio Quality", status_text),
-                ("Track ID", track.get('id', 'N/A')),
-                ("File Source", source_path)
-            ]
-
-            for label, val in detail_fields:
-                row = MDBoxLayout(orientation="vertical", spacing=dp(1), adaptive_height=True)
-                row.add_widget(MDLabel(text=label.upper(), font_style="Caption", theme_text_color="Secondary", size_hint_y=None, height=dp(14)))
-                row.add_widget(MDLabel(text=str(val), font_style="Body2", bold=True, shorten=True, shorten_from="center", size_hint_y=None, height=dp(20)))
-                container.add_widget(row)
-
-            if self.details_dialog:
-                self.details_dialog.dismiss()
-
-            self.details_dialog = MDDialog(
-                title="Song Details",
-                type="custom",
-                content_cls=container,
-                buttons=[MDRaisedButton(text="DONE", md_bg_color=(0.25, 0.24, 0.17, 1), on_release=lambda x: self.details_dialog.dismiss())],
-            )
-            self.details_dialog.open()
+            elif action == "download":
+                self._download_active_track()
+            elif action == "details":
+                self._show_song_details()
+            elif action == "logs":
+                self.open_crash_log_viewer()
+            elif action == "library":
+                self._toggle_like()
+            elif action == "artist" and self.current_track:
+                self._show_search_tab()
+                self.screen.search_input.text = self.current_track.get('uploader', '')
+                self._perform_search()
+            elif action == "speed_dial" and self.current_track:
+                self._set_artist_text("Pinned to speed dial!")
 
         def _open_full_player(self, *args):
             Animation(pos_hint={'y': 0}, duration=0.28, t='out_quad').start(self.screen.full_player)
@@ -731,130 +460,71 @@ def _run_app():
         def _close_full_player(self, *args):
             Animation(pos_hint={'y': -1}, duration=0.22, t='in_quad').start(self.screen.full_player)
 
-        def _toggle_like(self):
-            if not self.current_track:
-                return
-            is_fav = self.playlist_mgr.toggle_favorite(self.current_track)
-            anim = Animation(opacity=0.3, duration=0.08) + Animation(opacity=1.0, duration=0.1)
-            anim.start(self.screen.btn_like)
-            self._update_like_button_ui(is_fav)
-            if self.active_tab == "library":
-                self._render_library()
+        # ----------------- SEARCH SYSTEM (IMAGE 7) -----------------
+        def _clear_search_input(self):
+            self.screen.search_input.text = ""
+            self._render_search_history()
 
-        def _update_like_button_ui(self, is_liked: bool):
-            if is_liked:
-                self.screen.btn_like.icon = "heart"
-                self.screen.btn_like.text_color = (0.92, 0.22, 0.22, 1)
-            else:
-                self.screen.btn_like.icon = "heart-outline"
-                self.screen.btn_like.text_color = (1, 1, 1, 1)
+        def _render_search_history(self):
+            """Renders the YouTube Music-style search history query list (Image 7)."""
+            self.screen.list_view.clear_widgets()
 
-        def _on_refresh_home(self):
-            anim = Animation(opacity=0.3, duration=0.1) + Animation(opacity=1.0, duration=0.15)
-            anim.start(self.screen.btn_refresh)
-            self.screen.section_label.text = "Discovering new picks..."
-            self.screen.grid.clear_widgets()
-            threading.Thread(target=self._load_dynamic_home_music, daemon=True).start()
-
-        def _load_dynamic_home_music(self, query=None):
-            try:
-                if query:
-                    tracks = self.search_engine.search_tracks(query, max_results=24)
-                else:
-                    tracks = self.search_engine.get_trending_tracks(count=24)
-
-                self.trending_tracks = tracks
-                Clock.schedule_once(lambda dt: self._populate_speed_dial(tracks))
-            except Exception as e:
-                print(f"[Discovery Music Error] {e}")
-
-        def _populate_speed_dial(self, tracks: list[dict]):
-            if self.screen.section_label.text == "Discovering new picks...":
-                self.screen.section_label.text = "Speed dial"
-
-            self.screen.grid.clear_widgets()
-            for idx, track in enumerate(tracks):
-                card = SongCard(
-                    track_data=track,
-                    on_click_callback=lambda t: self._start_new_radio_mix(t)
+            for query in self.search_history:
+                item = TwoLineAvatarIconListItem(
+                    text=query,
+                    secondary_text="Recent search",
+                    theme_text_color="Primary"
                 )
-                self.screen.grid.add_widget(card)
+                # Left clock history icon
+                item.add_widget(IconLeftWidget(icon="history", theme_text_color="Secondary"))
 
-        def _start_new_radio_mix(self, track: dict):
-            self.is_restored_state = False
-            self.restored_position = 0.0
-            self.audio.load_queue([track], start_index=0)
-            self.play_track(track)
-            self._fetch_similar_and_build_loop_queue(track)
+                # Right container with diagonal arrow & cross button
+                right_box = MDBoxLayout(size_hint=(None, None), size=(dp(80), dp(48)), spacing=dp(4), pos_hint={'center_y': 0.5})
 
-        def _on_chip_selected(self, category: str):
-            self.screen.section_label.text = f"{category} picks"
-            self.screen.grid.clear_widgets()
-            threading.Thread(
-                target=lambda: self._load_dynamic_home_music(f"Best {category} music playlist hits"),
-                daemon=True
-            ).start()
+                btn_del = MDIconButton(icon="close", icon_size="18sp", theme_text_color="Secondary")
+                btn_del.bind(on_release=lambda inst, q=query: self._remove_search_history_item(q))
 
-        def _show_home_tab(self):
-            self.active_tab = "home"
-            self._update_nav_colors(self.screen.nav_home)
-            self.screen.header_title.text = "Home"
+                btn_populate = MDIconButton(icon="arrow-top-left", icon_size="18sp", theme_text_color="Secondary")
+                btn_populate.bind(on_release=lambda inst, q=query: self._populate_query_to_input(q))
 
-            if self.screen.search_box in self.screen.root_layout.children:
-                self.screen.root_layout.remove_widget(self.screen.search_box)
-            self.screen.chips_scroll.height = dp(36)
-            self.screen.chips_scroll.opacity = 1
-            self.screen.section_label.opacity = 1
-            self.screen.section_label.height = dp(30)
-            self.screen.section_label.text = "Speed dial"
-            self.screen.list_view.clear_widgets()
-            self._populate_speed_dial(self.trending_tracks)
+                right_box.add_widget(btn_del)
+                right_box.add_widget(btn_populate)
+                item.add_widget(right_box)
 
-        def _show_search_tab(self):
-            self.active_tab = "search"
-            self._update_nav_colors(self.screen.nav_search)
-            self.screen.header_title.text = "Search"
+                item.bind(on_release=lambda inst, q=query: self._search_from_history(q))
+                self.screen.list_view.add_widget(item)
 
-            if self.screen.search_box not in self.screen.root_layout.children:
-                self.screen.root_layout.add_widget(self.screen.search_box, index=3)
-            self.screen.chips_scroll.height = 0
-            self.screen.chips_scroll.opacity = 0
-            self.screen.section_label.opacity = 0
-            self.screen.section_label.height = 0
-            self.screen.grid.clear_widgets()
-            self.screen.list_view.clear_widgets()
+        def _remove_search_history_item(self, query: str):
+            if query in self.search_history:
+                self.search_history.remove(query)
+            self._render_search_history()
 
-        def _show_library_tab(self):
-            self.active_tab = "library"
-            self._update_nav_colors(self.screen.nav_library)
-            self.screen.header_title.text = "Library"
+        def _populate_query_to_input(self, query: str):
+            self.screen.search_input.text = query
 
-            if self.screen.search_box in self.screen.root_layout.children:
-                self.screen.root_layout.remove_widget(self.screen.search_box)
-            self.screen.chips_scroll.height = 0
-            self.screen.chips_scroll.opacity = 0
-            self.screen.section_label.opacity = 1
-            self.screen.section_label.height = dp(30)
-            self.screen.section_label.text = "Your Music & Collections"
-            self.screen.grid.clear_widgets()
-            self._render_library()
-
-        def _update_nav_colors(self, active_btn):
-            for btn in (self.screen.nav_home, self.screen.nav_search, self.screen.nav_library):
-                btn.text_color = (1, 1, 1, 1) if btn == active_btn else (0.5, 0.5, 0.5, 1)
+        def _search_from_history(self, query: str):
+            self.screen.search_input.text = query
+            self._perform_search()
 
         def _perform_search(self, *args):
             query = self.screen.search_input.text.strip()
             if not query:
                 return
 
+            if query not in self.search_history:
+                self.search_history.insert(0, query)
+                if len(self.search_history) > 15:
+                    self.search_history.pop()
+
             self.screen.list_view.clear_widgets()
+
             def _worker():
                 try:
-                    results = self.search_engine.search_tracks(query, max_results=10)
+                    results = self.search_engine.search_tracks(query, max_results=12)
                     Clock.schedule_once(lambda dt: self._populate_search_results(results))
                 except Exception as e:
                     print(f"[Search Worker Error] {e}")
+
             threading.Thread(target=_worker, daemon=True).start()
 
         def _populate_search_results(self, results: list[dict]):
@@ -877,6 +547,70 @@ def _run_app():
             self._trigger_download(track)
             Clock.schedule_once(lambda dt: setattr(button, 'icon', 'check-circle'), 3.0)
 
+        # ----------------- NAVIGATION ROUTING -----------------
+        def _show_home_tab(self):
+            self.active_tab = "home"
+            self._update_nav_state(self.screen.nav_home)
+
+            if self.screen.search_header in self.screen.root_layout.children:
+                self.screen.root_layout.remove_widget(self.screen.search_header)
+            if self.screen.top_bar not in self.screen.root_layout.children:
+                self.screen.root_layout.add_widget(self.screen.top_bar, index=len(self.screen.root_layout.children))
+
+            self.screen.chips_scroll.height = dp(42)
+            self.screen.chips_scroll.opacity = 1
+            self.screen.section_label.opacity = 1
+            self.screen.section_label.height = dp(36)
+            self.screen.section_label.text = "Speed dial"
+            self.screen.speed_dial_scroll.height = dp(340)
+            self.screen.speed_dial_scroll.opacity = 1
+            self.screen.list_view.clear_widgets()
+            self._populate_speed_dial(self.trending_tracks)
+
+        def _show_search_tab(self):
+            self.active_tab = "search"
+            self._update_nav_state(self.screen.nav_search)
+
+            if self.screen.top_bar in self.screen.root_layout.children:
+                self.screen.root_layout.remove_widget(self.screen.top_bar)
+            if self.screen.search_header not in self.screen.root_layout.children:
+                self.screen.root_layout.add_widget(self.screen.search_header, index=len(self.screen.root_layout.children))
+
+            self.screen.chips_scroll.height = 0
+            self.screen.chips_scroll.opacity = 0
+            self.screen.section_label.opacity = 0
+            self.screen.section_label.height = 0
+            self.screen.speed_dial_scroll.height = 0
+            self.screen.speed_dial_scroll.opacity = 0
+            self._render_search_history()
+
+        def _show_library_tab(self):
+            self.active_tab = "library"
+            self._update_nav_state(self.screen.nav_library)
+
+            if self.screen.search_header in self.screen.root_layout.children:
+                self.screen.root_layout.remove_widget(self.screen.search_header)
+            if self.screen.top_bar not in self.screen.root_layout.children:
+                self.screen.root_layout.add_widget(self.screen.top_bar, index=len(self.screen.root_layout.children))
+
+            self.screen.chips_scroll.height = 0
+            self.screen.chips_scroll.opacity = 0
+            self.screen.section_label.opacity = 1
+            self.screen.section_label.height = dp(36)
+            self.screen.section_label.text = "Your Music & Collections"
+            self.screen.speed_dial_scroll.height = 0
+            self.screen.speed_dial_scroll.opacity = 0
+            self._render_library()
+
+        def _update_nav_state(self, active_card):
+            """Applies pill capsule background highlight to the active tab (Image 7)."""
+            for card in (self.screen.nav_home, self.screen.nav_search, self.screen.nav_library):
+                is_act = (card == active_card)
+                card.md_bg_color = (0.20, 0.24, 0.32, 1) if is_act else (0, 0, 0, 0)
+                card.ic.text_color = (0.95, 0.96, 1, 1) if is_act else (0.55, 0.58, 0.68, 1)
+                card.lb.text_color = (0.95, 0.96, 1, 1) if is_act else (0.55, 0.58, 0.68, 1)
+
+        # ----------------- PLAYBACK & AUDIO PIPELINE -----------------
         def play_track(self, track: dict, start_pos: float = 0.0):
             self.audio.stop()
             self._update_play_button_ui(is_playing=False)
@@ -888,7 +622,6 @@ def _run_app():
             artist = track.get('uploader', 'Unknown Artist')
 
             self.playlist_mgr.add_to_history(track)
-
             is_fav = self.playlist_mgr.is_favorite(track.get('id', ''))
             self._update_like_button_ui(is_fav)
 
@@ -904,7 +637,6 @@ def _run_app():
             if track.get('local_path') and os.path.exists(track['local_path']):
                 self.screen.mini_artwork.source = "assets/placeholder.png"
                 self.screen.full_artwork.source = "assets/placeholder.png"
-                self.screen.mini_artist.text = track.get('uploader', 'Offline')
                 dur = float(track.get('duration') or 0.0)
                 if dur <= 0:
                     try:
@@ -960,6 +692,7 @@ def _run_app():
         def _apply_thumbnail(self, path: str):
             if not path or not os.path.exists(path):
                 return
+            self.current_artwork_path = path
             self.screen.mini_artwork.source = path
             self.screen.full_artwork.source = path
             try:
@@ -967,6 +700,18 @@ def _run_app():
                 self.screen.full_artwork.reload()
             except Exception:
                 pass
+
+            # Push metadata, artwork, position & duration to MediaSession / Mini Capsule
+            if hasattr(self, 'notif_mgr') and self.current_track:
+                pos, dur = self.audio.get_progress()
+                self.notif_mgr.show(
+                    title=self.current_track.get('title', 'Playing'),
+                    artist=self.current_track.get('uploader', 'Unknown Artist'),
+                    is_playing=self.audio.is_playing,
+                    artwork_path=path,
+                    position_sec=pos,
+                    duration_sec=dur
+                )
 
         def _toggle_play(self):
             if self.is_restored_state and self.current_track and not self.audio.is_playing:
@@ -983,11 +728,17 @@ def _run_app():
             self.screen.capsule_icon.icon = "pause" if is_playing else "play"
             self.screen.capsule_label.text = "Pause" if is_playing else "Play"
 
+            # Sync play/pause state and current timestamp with MediaSession & Mini Capsule
             if hasattr(self, 'notif_mgr') and self.current_track:
+                pos, dur = self.audio.get_progress()
+                art_path = getattr(self, 'current_artwork_path', None)
                 self.notif_mgr.show(
                     title=self.current_track.get('title', 'Playing'),
                     artist=self.current_track.get('uploader', 'Unknown Artist'),
-                    is_playing=is_playing
+                    is_playing=is_playing,
+                    artwork_path=art_path,
+                    position_sec=pos,
+                    duration_sec=dur
                 )
 
         def _play_next(self, *args):
@@ -1013,11 +764,9 @@ def _run_app():
 
         def _toggle_shuffle(self):
             self.audio.toggle_shuffle()
-            anim = Animation(opacity=0.3, duration=0.08) + Animation(opacity=1.0, duration=0.1)
-            anim.start(self.screen.btn_full_shuffle)
             if self.audio.is_shuffled:
                 self.screen.btn_full_shuffle.icon = "shuffle"
-                self.screen.btn_full_shuffle.text_color = (0.92, 0.82, 0.60, 1)
+                self.screen.btn_full_shuffle.text_color = (0.74, 0.78, 0.96, 1)
             else:
                 self.screen.btn_full_shuffle.icon = "shuffle-disabled"
                 self.screen.btn_full_shuffle.text_color = (0.5, 0.5, 0.5, 1)
@@ -1028,8 +777,36 @@ def _run_app():
             self.audio.set_repeat_mode(new_mode)
             icons = {"off": "repeat-off", "all": "repeat", "one": "repeat-once"}
             self.screen.btn_full_repeat.icon = icons[new_mode]
-            self.screen.btn_full_repeat.text_color = (0.92, 0.82, 0.60, 1) if new_mode != "off" else (0.5, 0.5, 0.5, 1)
+            self.screen.btn_full_repeat.text_color = (0.74, 0.78, 0.96, 1) if new_mode != "off" else (0.5, 0.5, 0.5, 1)
 
+        def _toggle_like(self):
+            if not self.current_track:
+                return
+            is_fav = self.playlist_mgr.toggle_favorite(self.current_track)
+            self._update_like_button_ui(is_fav)
+            if self.active_tab == "library":
+                self._render_library()
+
+        def _update_like_button_ui(self, is_liked: bool):
+            if is_liked:
+                self.screen.icon_like.icon = "heart"
+                self.screen.icon_like.text_color = (0.92, 0.25, 0.25, 1)
+            else:
+                self.screen.icon_like.icon = "heart-outline"
+                self.screen.icon_like.text_color = (0.85, 0.88, 0.98, 1)
+
+        def _copy_current_link(self):
+            if not self.current_track:
+                return
+            url = self.current_track.get('webpage_url') or f"https://www.youtube.com/watch?v={self.current_track.get('id', '')}"
+            Clipboard.copy(url)
+            self._set_artist_text("Link copied to clipboard!")
+
+        def _set_artist_text(self, text: str):
+            self.screen.mini_artist.text = text
+            self.screen.full_artist.text = text
+
+        # ----------------- SLIDER & TIME SYNC -----------------
         def _on_slider_touch_down(self, instance, touch):
             if instance.collide_point(*touch.pos):
                 self._is_user_seeking = True
@@ -1059,7 +836,6 @@ def _run_app():
                 return
 
             pos, length = self.audio.get_progress()
-
             if not self._is_user_seeking and length > 0 and self.audio.is_playing:
                 pct = max(0.0, min(100.0, (pos / length) * 100.0))
                 self.screen.mini_progress.value = pct
@@ -1072,36 +848,300 @@ def _run_app():
                 self._ticks_since_save = 0
                 self._persist_current_state()
 
-            if self.audio.is_finished():
-                self._play_next()
+        # ----------------- HOME & DISCOVERY -----------------
+        def _on_refresh_home(self):
+            self.screen.section_label.text = "Discovering new picks..."
+            self.screen.grid.clear_widgets()
+            threading.Thread(target=self._load_dynamic_home_music, daemon=True).start()
+
+        def _load_dynamic_home_music(self, query=None):
+            try:
+                if query:
+                    tracks = self.search_engine.search_tracks(query, max_results=24)
+                else:
+                    tracks = self.search_engine.get_trending_tracks(count=24)
+                self.trending_tracks = tracks
+                Clock.schedule_once(lambda dt: self._populate_speed_dial(tracks))
+            except Exception as e:
+                print(f"[Discovery Music Error] {e}")
+
+        def _populate_speed_dial(self, tracks: list[dict]):
+            if self.screen.section_label.text == "Discovering new picks...":
+                self.screen.section_label.text = "Speed dial"
+            self.screen.grid.clear_widgets()
+            for idx, track in enumerate(tracks):
+                card = SongCard(
+                    track_data=track,
+                    on_click_callback=lambda t: self._start_new_radio_mix(t)
+                )
+                self.screen.grid.add_widget(card)
+
+        def _start_new_radio_mix(self, track: dict):
+            self.is_restored_state = False
+            self.restored_position = 0.0
+            self.audio.load_queue([track], start_index=0)
+            self.play_track(track)
+            self._fetch_similar_and_build_loop_queue(track)
+
+        def _fetch_similar_and_build_loop_queue(self, seed_track: dict):
+            def _worker():
+                try:
+                    similar = self.search_engine.get_similar_tracks(seed_track, count=8)
+                    full_queue = [seed_track] + similar
+
+                    def _apply_queue(dt):
+                        self.audio.load_queue(full_queue, start_index=0)
+                        self.audio.set_repeat_mode("all")
+                        self.screen.btn_full_repeat.icon = "repeat"
+                        self.screen.btn_full_repeat.text_color = (0.74, 0.78, 0.96, 1)
+                        if self.queue_dialog:
+                            self._populate_queue_list_widget(full_queue)
+
+                    Clock.schedule_once(_apply_queue)
+                except Exception as e:
+                    print(f"[Queue Worker Error] {e}")
+
+            threading.Thread(target=_worker, daemon=True).start()
+
+        def _on_chip_selected(self, category: str):
+            self.screen.section_label.text = f"{category} picks"
+            self.screen.grid.clear_widgets()
+            threading.Thread(
+                target=lambda: self._load_dynamic_home_music(f"Best {category} music playlist hits"),
+                daemon=True
+            ).start()
+
+        # ----------------- DIALOGS & LIBRARY -----------------
+        def _show_history_dialog(self):
+            recent_tracks = self.playlist_mgr.get_history()
+            scroll = MDScrollView(size_hint=(1, None), height=dp(340))
+            list_widget = MDList()
+            scroll.add_widget(list_widget)
+
+            if not recent_tracks:
+                list_widget.add_widget(OneLineIconListItem(text="No recently played songs yet!"))
+            else:
+                for idx, track in enumerate(recent_tracks):
+                    item = TwoLineAvatarIconListItem(
+                        text=track.get('title', 'Unknown')[:34],
+                        secondary_text=track.get('uploader', 'Unknown')[:26]
+                    )
+                    item.add_widget(IconLeftWidget(icon="history", theme_text_color="Custom", text_color=(0.74, 0.78, 0.96, 1)))
+                    item.bind(on_release=lambda inst, t=track: self._play_from_history(t))
+                    list_widget.add_widget(item)
+
+            if self.history_dialog:
+                self.history_dialog.dismiss()
+
+            self.history_dialog = MDDialog(
+                title="Recently Played (Last 20)",
+                type="custom",
+                content_cls=scroll,
+                buttons=[MDRaisedButton(text="CLOSE", md_bg_color=(0.20, 0.24, 0.32, 1), on_release=lambda x: self.history_dialog.dismiss())],
+            )
+            self.history_dialog.open()
+
+        def _play_from_history(self, track: dict):
+            if self.history_dialog:
+                self.history_dialog.dismiss()
+            self._start_new_radio_mix(track)
+
+        def _show_queue_dialog(self):
+            scroll = MDScrollView(size_hint=(1, None), height=dp(320))
+            self.queue_list_widget = MDList()
+            scroll.add_widget(self.queue_list_widget)
+            self._populate_queue_list_widget(self.audio.queue)
+
+            if self.queue_dialog:
+                self.queue_dialog.dismiss()
+
+            self.queue_dialog = MDDialog(
+                title="Up Next (Similar Mix - Looping)",
+                type="custom",
+                content_cls=scroll,
+                buttons=[MDRaisedButton(text="CLOSE", md_bg_color=(0.20, 0.24, 0.32, 1), on_release=lambda x: self.queue_dialog.dismiss())],
+            )
+            self.queue_dialog.open()
+
+        def _populate_queue_list_widget(self, queue: list[dict]):
+            if not hasattr(self, 'queue_list_widget') or not self.queue_list_widget:
+                return
+            self.queue_list_widget.clear_widgets()
+            if not queue:
+                self.queue_list_widget.add_widget(OneLineIconListItem(text="Loading similar tracks..."))
+                return
+
+            for idx, track in enumerate(queue):
+                is_active = (idx == self.audio.current_index)
+                title = track.get('title', 'Unknown')[:34]
+                artist = track.get('uploader', 'Unknown')[:26]
+                item = TwoLineAvatarIconListItem(
+                    text=f"{'▶ ' if is_active else ''}{title}",
+                    secondary_text=artist
+                )
+                icon = "play-circle" if is_active else "music-note"
+                icon_color = (0.74, 0.78, 0.96, 1) if is_active else (0.6, 0.6, 0.6, 1)
+                item.add_widget(IconLeftWidget(icon=icon, theme_text_color="Custom", text_color=icon_color))
+                item.bind(on_release=lambda inst, i=idx: self._select_queue_item(i))
+                self.queue_list_widget.add_widget(item)
+
+        def _select_queue_item(self, index: int):
+            if self.queue_dialog:
+                self.queue_dialog.dismiss()
+            if 0 <= index < len(self.audio.queue):
+                self.audio.current_index = index
+                self.play_track(self.audio.queue[index])
+
+        def _open_sleep_timer_dialog(self):
+            box = MDBoxLayout(orientation="vertical", adaptive_height=True, spacing=dp(4))
+            options = [
+                ("15 Minutes", 15),
+                ("30 Minutes (Recommended)", 30),
+                ("45 Minutes", 45),
+                ("60 Minutes", 60),
+                ("End of Current Track", "end_track"),
+            ]
+            if self.sleep_timer_event or self.sleep_on_track_end:
+                options.append(("Turn Off Timer", "cancel"))
+
+            for label, val in options:
+                is_cancel = (val == "cancel")
+                btn = MDRaisedButton(
+                    text=label, size_hint_x=1, elevation=0,
+                    md_bg_color=(0.35, 0.15, 0.15, 1) if is_cancel else (0.16, 0.20, 0.28, 1),
+                    text_color=(1, 0.6, 0.6, 1) if is_cancel else (0.95, 0.95, 0.95, 1),
+                    on_release=lambda inst, v=val: self._handle_timer_selection(v)
+                )
+                box.add_widget(btn)
+
+            if self.sleep_timer_dialog:
+                self.sleep_timer_dialog.dismiss()
+
+            self.sleep_timer_dialog = MDDialog(
+                title="Sleep Timer",
+                type="custom",
+                content_cls=box,
+                buttons=[MDFlatButton(text="DISMISS", on_release=lambda x: self.sleep_timer_dialog.dismiss())],
+            )
+            self.sleep_timer_dialog.open()
+
+        def _handle_timer_selection(self, val):
+            if self.sleep_timer_dialog:
+                self.sleep_timer_dialog.dismiss()
+            if self.sleep_timer_event:
+                self.sleep_timer_event.cancel()
+                self.sleep_timer_event = None
+            self.sleep_on_track_end = False
+
+            if val == "cancel":
+                self.screen.btn_timer.icon = "moon-waning-crescent"
+                self.screen.btn_timer.text_color = (0.8, 0.8, 0.8, 1)
+                self._set_artist_text("Sleep timer canceled")
+                return
+
+            if val == "end_track":
+                self.sleep_on_track_end = True
+                self.screen.btn_timer.icon = "bed-clock"
+                self.screen.btn_timer.text_color = (0.74, 0.78, 0.96, 1)
+                self._set_artist_text("Playback will stop after this song")
+                return
+
+            seconds = val * 60
+            self.sleep_timer_event = Clock.schedule_once(self._on_sleep_timer_triggered, seconds)
+            self.screen.btn_timer.icon = "bed-clock"
+            self.screen.btn_timer.text_color = (0.74, 0.78, 0.96, 1)
+            self._set_artist_text(f"Sleep timer set for {val} minutes")
+
+        def _on_sleep_timer_triggered(self, dt):
+            self.audio.stop()
+            self._update_play_button_ui(is_playing=False)
+            self.sleep_timer_event = None
+            self.sleep_on_track_end = False
+            self.screen.btn_timer.icon = "moon-waning-crescent"
+            self.screen.btn_timer.text_color = (0.8, 0.8, 0.8, 1)
+            self._set_artist_text("Sleep timer finished. Playback stopped.")
 
         def _open_add_to_playlist_dialog(self):
             if not self.current_track:
                 return
-
             playlists = self.playlist_mgr.get_all_playlists()
             box = MDBoxLayout(orientation="vertical", adaptive_height=True, spacing=dp(8))
-
             dialog = MDDialog(
                 title="Add to Playlist",
                 type="custom",
                 content_cls=box,
                 buttons=[MDFlatButton(text="CANCEL", on_release=lambda x: dialog.dismiss())]
             )
-
             for name in playlists:
                 btn = MDRaisedButton(
                     text=name, size_hint_x=1,
                     on_release=lambda inst, n=name: self._confirm_add_playlist(n, dialog)
                 )
                 box.add_widget(btn)
-
             dialog.open()
 
         def _confirm_add_playlist(self, name: str, dialog):
             dialog.dismiss()
             self.playlist_mgr.add_to_playlist(name, self.current_track)
             self._set_artist_text(f"Added to {name}!")
+
+        def _show_song_details(self):
+            if not self.current_track:
+                return
+            track = self.current_track
+            dur = float(self.audio.current_duration or track.get('duration') or 0.0)
+            is_offline = bool(track.get('local_path') and os.path.exists(track['local_path']))
+            status_text = "Offline Storage (Local)" if is_offline else "Online Stream (Vorbis OGG / 192kbps)"
+            source_path = track.get('local_path') if is_offline else track.get('webpage_url', 'YouTube Music')
+
+            container = MDBoxLayout(orientation="vertical", spacing=dp(8), padding=[dp(8), dp(4), dp(8), dp(4)], adaptive_height=True)
+            detail_fields = [
+                ("Track Title", track.get('title', 'Unknown Track')),
+                ("Artist / Channel", track.get('uploader', 'Unknown Artist')),
+                ("Duration", format_time(dur)),
+                ("Audio Quality", status_text),
+                ("Track ID", track.get('id', 'N/A')),
+                ("File Source", source_path)
+            ]
+            for label, val in detail_fields:
+                row = MDBoxLayout(orientation="vertical", spacing=dp(1), adaptive_height=True)
+                row.add_widget(MDLabel(text=label.upper(), font_style="Caption", theme_text_color="Secondary", size_hint_y=None, height=dp(14)))
+                row.add_widget(MDLabel(text=str(val), font_style="Body2", bold=True, shorten=True, shorten_from="center", size_hint_y=None, height=dp(20)))
+                container.add_widget(row)
+
+            if self.details_dialog:
+                self.details_dialog.dismiss()
+
+            self.details_dialog = MDDialog(
+                title="Song Details",
+                type="custom",
+                content_cls=container,
+                buttons=[MDRaisedButton(text="DONE", md_bg_color=(0.20, 0.24, 0.32, 1), on_release=lambda x: self.details_dialog.dismiss())],
+            )
+            self.details_dialog.open()
+
+        def _download_active_track(self):
+            if not self.current_track:
+                return
+            if self.current_track.get('local_path') and os.path.exists(self.current_track['local_path']):
+                self._set_artist_text("Already available offline")
+                return
+            title = self.current_track.get('title', 'Track')[:24]
+            self._set_artist_text(f"Downloading: {title}...")
+
+            def _worker():
+                url = self.current_track.get('webpage_url') or f"https://www.youtube.com/watch?v={self.current_track.get('id')}"
+                success = self.downloader.download_track(url, self.current_track.get('title', 'track'))
+                Clock.schedule_once(lambda dt: self._set_artist_text("Saved to downloads/" if success else "Download failed"))
+            threading.Thread(target=_worker, daemon=True).start()
+
+        def _trigger_download(self, track_data: dict):
+            self._set_artist_text("Downloading song...")
+            def _worker():
+                url = track_data.get('webpage_url') or f"https://www.youtube.com/watch?v={track_data.get('id')}"
+                success = self.downloader.download_track(url, track_data.get('title', 'track'))
+                Clock.schedule_once(lambda dt: self._set_artist_text("Download finished!" if success else "Download failed"))
+            threading.Thread(target=_worker, daemon=True).start()
 
         def _render_library(self):
             self.screen.list_view.clear_widgets()
@@ -1111,7 +1151,7 @@ def _run_app():
                 text="Liked Songs",
                 secondary_text=f"{len(favorites)} favorite tracks"
             )
-            fav_header.add_widget(IconLeftWidget(icon="heart", theme_text_color="Custom", text_color=(0.92, 0.22, 0.22, 1)))
+            fav_header.add_widget(IconLeftWidget(icon="heart", theme_text_color="Custom", text_color=(0.92, 0.25, 0.25, 1)))
             fav_header.bind(on_release=lambda x: self._render_liked_songs_list())
             self.screen.list_view.add_widget(fav_header)
 
@@ -1142,7 +1182,7 @@ def _run_app():
                     text=track.get('title', 'Unknown')[:36],
                     secondary_text=track.get('uploader', 'Unknown')[:28]
                 )
-                item.add_widget(IconLeftWidget(icon="heart", theme_text_color="Custom", text_color=(0.92, 0.22, 0.22, 1)))
+                item.add_widget(IconLeftWidget(icon="heart", theme_text_color="Custom", text_color=(0.92, 0.25, 0.25, 1)))
                 item.bind(on_release=lambda inst, t=track: self._start_new_radio_mix(t))
                 self.screen.list_view.add_widget(item)
 
@@ -1167,9 +1207,6 @@ def _run_app():
     MusicPlayerApp().run()
 
 
-# =========================================================
-# GLOBAL ENTRY POINT (Traps ALL import and execution errors)
-# =========================================================
 if __name__ == '__main__':
     try:
         _run_app()
