@@ -14,6 +14,11 @@ from kivymd.uix.list import MDList
 from kivymd.uix.fitimage import FitImage
 
 
+class ClickableCard(ButtonBehavior, MDCard):
+    """MDCard with button click and touch release events enabled."""
+    pass
+
+
 class SongCard(ButtonBehavior, MDCard):
     """Compact song card for the horizontal Speed Dial."""
     def __init__(self, track_data: dict, on_click_callback, **kwargs):
@@ -135,7 +140,7 @@ class PlayerScreen(FloatLayout):
         )
         self.root_layout.add_widget(self.section_label)
 
-        # ----------------- HORIZONTAL SPEED DIAL SCROLL (ISSUE 2 FIX) -----------------
+        # HORIZONTAL SPEED DIAL SCROLL
         self.speed_dial_scroll = MDScrollView(
             do_scroll_x=True,
             do_scroll_y=False,
@@ -143,7 +148,6 @@ class PlayerScreen(FloatLayout):
             height=dp(325),
             bar_width=0
         )
-        # 3 Rows grid scrolling horizontally left-to-right
         self.grid = MDGridLayout(
             rows=3,
             adaptive_width=True,
@@ -160,7 +164,7 @@ class PlayerScreen(FloatLayout):
         self.main_scroll.add_widget(self.list_view)
         self.root_layout.add_widget(self.main_scroll)
 
-        # ----------------- COMPACT FLOATING MINI-PLAYER -----------------
+        # COMPACT FLOATING MINI-PLAYER
         self.mini_card = MDCard(
             orientation="vertical",
             size_hint=(1, None),
@@ -204,9 +208,10 @@ class PlayerScreen(FloatLayout):
         self.mini_text_box.add_widget(self.mini_title)
         self.mini_text_box.add_widget(self.mini_artist)
 
-        self.btn_mini_play = MDIconButton(icon="play-circle", user_font_size="28sp")
-        self.btn_mini_next = MDIconButton(icon="skip-next", user_font_size="24sp")
-        self.btn_mini_more = MDIconButton(icon="dots-vertical", user_font_size="20sp")
+        # Fixed: Replaced user_font_size with icon_size
+        self.btn_mini_play = MDIconButton(icon="play-circle", icon_size="28sp")
+        self.btn_mini_next = MDIconButton(icon="skip-next", icon_size="24sp")
+        self.btn_mini_more = MDIconButton(icon="dots-vertical", icon_size="20sp")
 
         mini_row.add_widget(self.mini_artwork)
         mini_row.add_widget(self.mini_text_box)
@@ -224,9 +229,18 @@ class PlayerScreen(FloatLayout):
             height=dp(52),
             md_bg_color=(0.10, 0.10, 0.10, 1)
         )
-        self.nav_home = MDIconButton(icon="home", size_hint_x=0.33, text_color=(1, 1, 1, 1))
-        self.nav_search = MDIconButton(icon="magnify", size_hint_x=0.33, text_color=(0.5, 0.5, 0.5, 1))
-        self.nav_library = MDIconButton(icon="playlist-music", size_hint_x=0.33, text_color=(0.5, 0.5, 0.5, 1))
+        self.nav_home = MDIconButton(
+            icon="home", size_hint_x=0.33,
+            theme_text_color="Custom", text_color=(1, 1, 1, 1)
+        )
+        self.nav_search = MDIconButton(
+            icon="magnify", size_hint_x=0.33,
+            theme_text_color="Custom", text_color=(0.5, 0.5, 0.5, 1)
+        )
+        self.nav_library = MDIconButton(
+            icon="playlist-music", size_hint_x=0.33,
+            theme_text_color="Custom", text_color=(0.5, 0.5, 0.5, 1)
+        )
         nav_bar.add_widget(self.nav_home)
         nav_bar.add_widget(self.nav_search)
         nav_bar.add_widget(self.nav_library)
@@ -234,7 +248,7 @@ class PlayerScreen(FloatLayout):
 
         self.add_widget(self.root_layout)
 
-        # ----------------- 100% FULL-SCREEN EXPANDED PLAYER (ISSUE 3 FIX) -----------------
+        # ----------------- 100% FULL-SCREEN EXPANDED PLAYER -----------------
         self.full_player = MDBoxLayout(
             orientation="vertical",
             size_hint=(1, 1),
@@ -248,7 +262,7 @@ class PlayerScreen(FloatLayout):
         self.full_player.add_widget(self.top_drag_bar)
 
         full_top_bar = MDBoxLayout(size_hint_y=None, height=dp(48))
-        self.btn_close_full = MDIconButton(icon="chevron-down", user_font_size="28sp")
+        self.btn_close_full = MDIconButton(icon="chevron-down", icon_size="28sp")
         full_titles = MDBoxLayout(orientation="vertical")
         self.full_header_title = MDLabel(text="Now Playing", font_style="Caption", halign="center", theme_text_color="Secondary")
         self.full_header_sub = MDLabel(text="", font_style="Subtitle2", bold=True, halign="center", shorten=True)
@@ -261,7 +275,7 @@ class PlayerScreen(FloatLayout):
         full_top_bar.add_widget(btn_cast)
         self.full_player.add_widget(full_top_bar)
 
-        # RESPONSIVE ARTWORK
+        # ARTWORK
         art_card = MDCard(
             size_hint=(0.85, 0.44),
             pos_hint={'center_x': 0.5},
@@ -301,9 +315,10 @@ class PlayerScreen(FloatLayout):
 
         # CENTER PLAYBACK CONTROLS (PILL CAPSULE)
         controls = MDBoxLayout(size_hint_y=None, height=dp(70), spacing=dp(16))
-        self.btn_full_prev = MDIconButton(icon="skip-previous", user_font_size="32sp", pos_hint={'center_y': 0.5})
+        self.btn_full_prev = MDIconButton(icon="skip-previous", icon_size="32sp", pos_hint={'center_y': 0.5})
 
-        self.btn_full_play_capsule = MDCard(
+        # Fixed: Now uses ClickableCard so on_release is supported
+        self.btn_full_play_capsule = ClickableCard(
             size_hint=(None, None),
             size=(dp(130), dp(52)),
             radius=[dp(26)],
@@ -318,14 +333,14 @@ class PlayerScreen(FloatLayout):
         cap_row.add_widget(self.capsule_label)
         self.btn_full_play_capsule.add_widget(cap_row)
 
-        self.btn_full_next = MDIconButton(icon="skip-next", user_font_size="32sp", pos_hint={'center_y': 0.5})
+        self.btn_full_next = MDIconButton(icon="skip-next", icon_size="32sp", pos_hint={'center_y': 0.5})
 
         controls.add_widget(self.btn_full_prev)
         controls.add_widget(self.btn_full_play_capsule)
         controls.add_widget(self.btn_full_next)
         self.full_player.add_widget(controls)
 
-        # BOTTOM UTILITY BAR (QUEUE, TIMER, SHUFFLE, REPEAT, 3-DOTS)
+        # BOTTOM UTILITY BAR
         util_bar = MDBoxLayout(size_hint_y=None, height=dp(48))
         self.btn_queue = MDIconButton(icon="playlist-play")
         self.btn_timer = MDIconButton(icon="moon-waning-crescent")

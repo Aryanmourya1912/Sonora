@@ -5,6 +5,7 @@ from kivy.utils import platform
 # Lazy-loaded Android MediaPlayer class handle
 AndroidMediaPlayer = None
 
+
 def get_android_media_player():
     global AndroidMediaPlayer
     if platform == 'android' and AndroidMediaPlayer is None:
@@ -86,27 +87,24 @@ class AudioController:
             if not player:
                 return False
             try:
-                # Keep CPU awake and claim Audio Focus for Bluetooth controls
+                # 1. Reset state before setting new data source
+                player.reset()
+
+                # 2. Prevent CPU sleep while music plays in background
                 try:
                     from jnius import autoclass  # type: ignore
 
                     PythonActivity = autoclass('org.kivy.android.PythonActivity')
                     PowerManager = autoclass('android.os.PowerManager')
-                    Context = autoclass('android.content.Context')
-                    AudioManager = autoclass('android.media.AudioManager')
+                    
+                    activity = PythonActivity.mActivity
+                    if activity:
+                        context = activity.getApplicationContext()
+                        player.setWakeMode(context, PowerManager.PARTIAL_WAKE_LOCK)
+                except Exception as wake_err:
+                    print(f"[WakeLock Warning] {wake_err}")
 
-                    context = PythonActivity.mActivity.getApplicationContext()
-
-                    # 1. Prevent CPU sleep while song plays
-                    player.setWakeMode(context, PowerManager.PARTIAL_WAKE_LOCK)
-
-                    # 2. Request system Audio Focus so Bluetooth earbud taps route to this app
-                    audio_service = context.getSystemService(Context.AUDIO_SERVICE)
-                    audio_service.requestAudioFocus(None, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN)
-                except Exception as af_err:
-                    print(f"[Audio Focus / Wake Error] {af_err}")
-
-                player.reset()
+                # 3. Load audio file and prepare
                 player.setDataSource(file_path)
                 player.prepare()
 
@@ -123,6 +121,7 @@ class AudioController:
                 return True
             except Exception as err:
                 print(f"[Android Media Play Error] {err}")
+                self.is_playing = False
                 return False
         else:
             try:
@@ -138,6 +137,7 @@ class AudioController:
                 return True
             except Exception as err:
                 print(f"[Desktop Media Play Error] {err}")
+                self.is_playing = False
                 return False
 
     def toggle_play_pause(self):
@@ -174,10 +174,9 @@ class AudioController:
         if platform == 'android' and self.android_player:
             try:
                 self.android_player.seekTo(int(target_sec * 1000))
-                if not self.is_playing:
+                if not self.is_playing and not self.is_paused:
                     self.android_player.start()
                     self.is_playing = True
-                    self.is_paused = False
             except Exception:
                 pass
         elif self.desktop_sound:
@@ -241,11 +240,19 @@ class AudioController:
         return max(0.0, min(pos, dur)), dur
 
     def is_finished(self) -> bool:
+        """Determines if the active track completed, guarding against startup buffering false-positives."""
+        if not self.is_playing or self.is_paused:
+            return False
+
         if platform == 'android' and self.android_player:
             try:
-                return not self.android_player.isPlaying() and not self.is_paused and self.is_playing
+                pos, dur = self.get_progress()
+                # Guard: Do not mark finished if song just started buffering (< 1.5s)
+                if pos < 1.5:
+                    return False
+                return not self.android_player.isPlaying() and (pos >= dur - 2.0)
             except Exception:
                 return False
-        elif self.desktop_sound and self.is_playing:
+        elif self.desktop_sound:
             return self.desktop_sound.state == 'stop'
         return False

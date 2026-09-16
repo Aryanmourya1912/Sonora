@@ -31,6 +31,7 @@ from kivymd.uix.label import MDLabel
 from kivymd.uix.list import (
     TwoLineAvatarIconListItem,
     OneLineIconListItem,
+    OneLineListItem,
     IconLeftWidget,
     IconRightWidget
 )
@@ -87,11 +88,12 @@ def display_thread_crash(error_text: str):
     popup.add_widget(box)
     popup.open()
 
+
 def write_crash_log(error_text: str):
     """Appends crash tracebacks to crash.log inside user_data_dir."""
     try:
         app = MDApp.get_running_app()
-        if app and hasattr(app, 'user_data_dir'):
+        if app and hasattr(app, 'user_data_dir') and app.user_data_dir:
             base_dir = app.user_data_dir
         else:
             base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -131,8 +133,6 @@ threading.excepthook = global_thread_exception_handler
 # ==========================================
 # Main Application Class
 # ==========================================
-
-
 class MusicPlayerApp(MDApp):
 
     def _get_cache_dir(self) -> str:
@@ -145,7 +145,6 @@ class MusicPlayerApp(MDApp):
         """Opens a modal dialog showing recorded crash logs with an option to wipe them."""
         log_path = os.path.join(self.user_data_dir, "crash.log")
 
-        # Read existing file contents
         content_text = "No crash logs recorded yet."
         if os.path.exists(log_path):
             try:
@@ -155,13 +154,9 @@ class MusicPlayerApp(MDApp):
             except Exception as read_err:
                 content_text = f"Failed to read crash log: {read_err}"
 
-    
-
-        # Outer modal container
         modal = ModalView(size_hint=(0.92, 0.85), auto_dismiss=True)
         container = BoxLayout(orientation="vertical", spacing=10, padding=12)
 
-        # Log content text box
         text_box = TextInput(
             text=content_text,
             readonly=True,
@@ -172,7 +167,6 @@ class MusicPlayerApp(MDApp):
             padding=[12, 12, 12, 12],
         )
 
-        # Action button container
         btn_bar = BoxLayout(orientation="horizontal", size_hint=(1, 0.12), spacing=10)
 
         def _clear_logs(instance):
@@ -207,13 +201,14 @@ class MusicPlayerApp(MDApp):
         modal.open()
 
     def _trigger_menu_action(self, action_func):
-        if hasattr(self, 'menu') and self.menu:
-            self.menu.dismiss()
+        """Dismisses the dropdown menu safely before executing an action."""
+        menu = getattr(self, 'menu', None)
+        if menu:
+            menu.dismiss()
         action_func()
 
     def _build_crash_screen(self, error_trace: str):
         """Displays full traceback in a high-contrast, copyable text box."""
-        # Log to file immediately
         write_crash_log(f"Main Thread Startup Crash:\n\n{error_trace}")
 
         return TextInput(
@@ -271,7 +266,7 @@ class MusicPlayerApp(MDApp):
                         return
                     action = intent.getAction()
 
-                    # 1. Handle on-screen notification buttons
+                    # 1. On-screen notification buttons
                     if action == PlaybackNotificationManager.ACTION_TOGGLE:
                         self._toggle_play()
                     elif action == PlaybackNotificationManager.ACTION_NEXT:
@@ -279,10 +274,9 @@ class MusicPlayerApp(MDApp):
                     elif action == PlaybackNotificationManager.ACTION_PREV:
                         self._play_prev()
 
-                    # 2. Handle Bluetooth earbud and wired headset clicks
+                    # 2. Bluetooth and wired headset clicks
                     elif action == Intent.ACTION_MEDIA_BUTTON:
                         key_event = intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT)
-                        # Filter only ACTION_DOWN so single taps don't trigger twice
                         if key_event and key_event.getAction() == KeyEvent.ACTION_DOWN:
                             code = key_event.getKeyCode()
                             if code in (KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_HEADSETHOOK):
@@ -319,7 +313,7 @@ class MusicPlayerApp(MDApp):
         self.screen = PlayerScreen()
         self._bind_events()
 
-        # 1. Restore previous session's stopped song and position after UI mounts
+        # 1. Restore previous session after UI mounts
         Clock.schedule_once(lambda dt: self._restore_last_playback_state(), 0.05)
 
         # 2. Schedule progress bar and periodic state save
@@ -329,10 +323,8 @@ class MusicPlayerApp(MDApp):
         threading.Thread(target=self._load_dynamic_home_music, daemon=True).start()
 
         return self.screen
-        
 
     def on_pause(self):
-        # Tells Android to keep the Python runtime running when minimized
         return True
 
     def on_resume(self):
@@ -342,7 +334,7 @@ class MusicPlayerApp(MDApp):
         """Saves exact state when app closes."""
         self._persist_current_state()
 
-        if hasattr(self, 'notif_mgr'):
+        if hasattr(self, 'notif_mgr') and self.notif_mgr:
             self.notif_mgr.cancel()
         if hasattr(self, '_notif_receiver') and self._notif_receiver:
             self._notif_receiver.stop()
@@ -354,7 +346,7 @@ class MusicPlayerApp(MDApp):
             self.playlist_mgr.save_last_playback(self.current_track, target_pos)
 
     def _restore_last_playback_state(self):
-        """Restores the last stopped song and exact timestamp in the mini-player."""
+        """Restores the last stopped song and timestamp into the mini-player."""
         last_track, last_pos = self.playlist_mgr.get_last_playback()
         if not last_track:
             return
@@ -423,7 +415,9 @@ class MusicPlayerApp(MDApp):
         self.screen.mini_artwork.bind(on_touch_down=self._on_mini_content_touch)
         self.screen.mini_text_box.bind(on_touch_down=self._on_mini_content_touch)
         self.screen.btn_close_full.on_release = self._close_full_player
-        self.screen.top_drag_bar.bind(on_touch_down=lambda inst, touch: self._close_full_player() if inst.collide_point(*touch.pos) else False)
+        self.screen.top_drag_bar.bind(
+            on_touch_down=lambda inst, touch: self._close_full_player() if inst.collide_point(*touch.pos) else False
+        )
 
         # Mini Player Controls
         self.screen.btn_mini_play.on_release = self._toggle_play
@@ -655,7 +649,6 @@ class MusicPlayerApp(MDApp):
             self.play_track(self.audio.queue[index])
 
     # ----------------- THREE-DOTS CONTEXT MENU -----------------
-    # ----------------- THREE-DOTS CONTEXT MENU -----------------
     def _open_song_menu(self, caller_widget):
         if not self.current_track:
             return
@@ -695,7 +688,6 @@ class MusicPlayerApp(MDApp):
         if self.menu:
             self.menu.dismiss()
 
-        # hor_growth="left" and ver_growth="up" prevent screen overflow
         self.menu = MDDropdownMenu(
             caller=caller_widget,
             items=menu_items,
@@ -740,7 +732,7 @@ class MusicPlayerApp(MDApp):
         threading.Thread(target=_worker, daemon=True).start()
 
     def _trigger_download(self, track_data: dict):
-        """Dispatches downloads to a daemon thread to prevent Android UI lockups."""
+        """Dispatches downloads to a daemon thread to prevent UI lockups."""
         self._set_artist_text("Downloading song...")
 
         def _worker():
@@ -855,7 +847,6 @@ class MusicPlayerApp(MDApp):
 
     # ----------------- DYNAMIC HOME & SPEED DIAL -----------------
     def _load_dynamic_home_music(self, query=None):
-        """Loads 24 songs to populate the horizontal scroll."""
         if query:
             tracks = self.search_engine.search_tracks(query, max_results=24)
         else:
@@ -997,14 +988,7 @@ class MusicPlayerApp(MDApp):
         self._current_fetch_id += 1
         fetch_id = self._current_fetch_id
 
-        # Artwork Fetch Thread
-        threading.Thread(
-            target=_download_artwork,
-            name="ArtworkDownloadThread",
-            daemon=True
-        ).start()
-
-        # Local Playback
+        # 1. Local Playback
         if track.get('local_path') and os.path.exists(track['local_path']):
             self.screen.mini_artwork.source = "assets/placeholder.png"
             self.screen.full_artwork.source = "assets/placeholder.png"
@@ -1020,8 +1004,8 @@ class MusicPlayerApp(MDApp):
             self.audio.play_local_file(track['local_path'], duration=dur, start_pos=start_pos)
             self._update_play_button_ui(is_playing=True)
             return
-        
-        # Artwork Fetch
+
+        # 2. Artwork Fetch
         track_id = track.get('id', 'temp')
         thumb_url = track.get('thumbnail')
         if thumb_url:
@@ -1043,18 +1027,22 @@ class MusicPlayerApp(MDApp):
                 except Exception as e:
                     print(f"[Thumbnail Download Error] {e}")
 
-            threading.Thread(target=_download_artwork, daemon=True).start()
+            threading.Thread(
+                target=_download_artwork,
+                name="ArtworkDownloadThread",
+                daemon=True
+            ).start()
 
-        # Background Audio Fetch
+        # 3. Background Audio Fetch
         def _fetch_audio():
-            audio_path, duration = self.search_engine.prepare_audio_file(track['webpage_url'], track_id)
+            audio_path, duration = self.search_engine.prepare_audio_file(
+                track.get('webpage_url', ''), track_id
+            )
             if fetch_id != self._current_fetch_id:
                 return
             if audio_path:
-                # 1. Start audio immediately so background playback is uninterrupted
                 self.audio.play_local_file(audio_path, duration=duration, start_pos=start_pos)
-                
-                # 2. Schedule UI text updates (updates when screen is viewed)
+
                 def _update_ui(dt):
                     self.screen.mini_artist.text = track.get('uploader') or 'Unknown Artist'
                     self.screen.time_total.text = format_time(duration)
@@ -1063,7 +1051,7 @@ class MusicPlayerApp(MDApp):
             else:
                 Clock.schedule_once(lambda dt: setattr(self.screen.mini_artist, 'text', 'Playback failed'), 0)
 
-        threading.Thread(target=_fetch_audio, daemon=True).start()
+        threading.Thread(target=_fetch_audio, name="AudioStreamThread", daemon=True).start()
 
     def _start_audio_playback(self, audio_path: str, duration: float, uploader: str, start_pos: float = 0.0):
         self.screen.mini_artist.text = uploader or 'Unknown Artist'
@@ -1071,7 +1059,6 @@ class MusicPlayerApp(MDApp):
         self.audio.play_local_file(audio_path, duration=duration, start_pos=start_pos)
         self._update_play_button_ui(is_playing=True)
 
-        # Update lockscreen notification with song details
         if hasattr(self, 'notif_mgr') and self.notif_mgr:
             track = self.current_track or {}
             self.notif_mgr.show(
@@ -1108,7 +1095,6 @@ class MusicPlayerApp(MDApp):
         self.screen.capsule_icon.icon = "pause" if is_playing else "play"
         self.screen.capsule_label.text = "Pause" if is_playing else "Play"
 
-        # Keep lockscreen action button synchronized with UI state
         if hasattr(self, 'notif_mgr') and self.current_track:
             self.notif_mgr.show(
                 title=self.current_track.get('title', 'Playing'),
@@ -1238,7 +1224,7 @@ class MusicPlayerApp(MDApp):
 
         favorites = self.playlist_mgr.get_favorites()
         fav_header = TwoLineAvatarIconListItem(
-            text=f"Liked Songs",
+            text="Liked Songs",
             secondary_text=f"{len(favorites)} favorite tracks"
         )
         fav_header.add_widget(IconLeftWidget(icon="heart", theme_text_color="Custom", text_color=(0.92, 0.22, 0.22, 1)))
@@ -1258,7 +1244,7 @@ class MusicPlayerApp(MDApp):
         self.screen.list_view.clear_widgets()
         favorites = self.playlist_mgr.get_favorites()
 
-        back_item = OneLineIconListItem(text=f"<- Back to Library (Liked Songs)")
+        back_item = OneLineIconListItem(text="<- Back to Library (Liked Songs)")
         back_item.add_widget(IconLeftWidget(icon="arrow-left"))
         back_item.bind(on_release=lambda x: self._render_library())
         self.screen.list_view.add_widget(back_item)
@@ -1280,29 +1266,19 @@ class MusicPlayerApp(MDApp):
         self.screen.list_view.clear_widgets()
         offline_tracks = self.playlist_mgr.get_offline_tracks()
 
-        back_item = OneLineIconListItem(text=f"<- Back to Library (Downloads)")
+        back_item = OneLineIconListItem(text="<- Back to Library (Downloads)")
         back_item.add_widget(IconLeftWidget(icon="arrow-left"))
         back_item.bind(on_release=lambda x: self._render_library())
         self.screen.list_view.add_widget(back_item)
 
         for idx, track in enumerate(offline_tracks):
             item = TwoLineAvatarIconListItem(
-                text=track['title'][:36],
+                text=track.get('title', 'Unknown')[:36],
                 secondary_text="Offline Storage"
             )
             item.add_widget(IconLeftWidget(icon="cellphone-arrow-down"))
             item.bind(on_release=lambda inst, t=track: self._start_new_radio_mix(t))
             self.screen.list_view.add_widget(item)
-
-    # Add to the bottom of build(), right before 'return self.screen'
-        def _background_queue_watcher():
-            import time
-            while True:
-                time.sleep(0.5)
-                if self.audio and self.audio.is_playing and self.audio.is_finished():
-                    self._play_next()
-
-        threading.Thread(target=_background_queue_watcher, daemon=True).start()
 
 
 # ----------------- CRASH REPORTER & ENTRY POINT -----------------

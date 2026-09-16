@@ -1,51 +1,15 @@
 import os
 import random
 import re
+from typing import Optional
 
 import mutagen
 import yt_dlp
-import certifi
-
-class SearchManager:
-    def __init__(self, cache_dir: str = "cache"):
-        self.cache_dir = cache_dir
-        os.makedirs(self.cache_dir, exist_ok=True)
-
-        self.ydl_opts = {
-            'format': 'bestaudio[ext=m4a]/bestaudio/best',
-            'quiet': True,
-            'no_warnings': True,
-            'nocheckcertificate': True,
-            'cachedir': False,
-            'outtmpl': os.path.join(self.cache_dir, '%(id)s.%(ext)s'),
-        }
-
-    def prepare_audio_file(self, video_url: str, track_id: str) -> tuple[str | None, float]:
-        target_path = os.path.join(self.cache_dir, f"{track_id}.m4a")
-        duration = 0.0
-
-        if not os.path.exists(target_path):
-            try:
-                with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
-                    info = ydl.extract_info(video_url, download=True)
-                    if info:
-                        duration = float(info.get('duration') or 0.0)
-            except Exception as e:
-                print(f"[Stream Fetch Error] {e}")
-                return None, 0.0
-
-        # Detect the downloaded file
-        for ext in ('m4a', 'mp3', 'webm', 'opus'):
-            candidate = os.path.join(self.cache_dir, f"{track_id}.{ext}")
-            if os.path.exists(candidate):
-                return candidate, duration
-
-        return None, 0.0
-        
+from kivy.utils import platform
 
 
 class SafeLogger:
-    """Suppress most yt-dlp messages and display errors only."""
+    """Suppress normal yt-dlp output and display errors only."""
 
     def debug(self, msg):
         pass
@@ -61,25 +25,75 @@ class SafeLogger:
 
 
 class SearchEngine:
-    """YouTube search, music discovery, recommendations, and caching."""
+    """
+    YouTube search, music discovery, recommendations,
+    audio downloading, and local caching.
+    """
 
-    def __init__(self, cache_dir: str = "cache"):
+    def __init__(self, cache_dir: Optional[str] = None):
+
         self.logger = SafeLogger()
-        self.cache_dir = cache_dir
 
-        # Create the cache directory if it does not exist.
-        os.makedirs(self.cache_dir, exist_ok=True)
+        # ---------------------------------------------------------
+        # 1. Resolve writable cache directory
+        # ---------------------------------------------------------
 
-        # Common yt-dlp options.
+        if cache_dir:
+            self.cache_dir = os.path.abspath(cache_dir)
+
+        elif platform == "android":
+            try:
+                from kivymd.app import MDApp
+
+                app = MDApp.get_running_app()
+
+                if app:
+                    base_dir = app.user_data_dir
+                else:
+                    base_dir = os.path.expanduser("~")
+
+                self.cache_dir = os.path.join(
+                    base_dir,
+                    "audio_cache",
+                )
+
+            except Exception as error:
+                print(f"[Android Cache Path Error] {error}")
+                self.cache_dir = os.path.abspath("audio_cache")
+
+        else:
+            self.cache_dir = os.path.abspath("audio_cache")
+
+        # Create cache directory
+        try:
+            os.makedirs(
+                self.cache_dir,
+                exist_ok=True,
+            )
+        except OSError as error:
+            print(f"[SearchEngine Cache Dir Error] {error}")
+
+        # ---------------------------------------------------------
+        # 2. Base yt-dlp options
+        # ---------------------------------------------------------
+
         self.base_opts = {
             "quiet": True,
             "no_warnings": True,
             "logger": self.logger,
             "nocheckcertificate": True,
+
+            # Disable yt-dlp's own cache.
+            # Our application has its own audio cache.
+            "cachedir": False,
         }
 
-        # Search queries used for random music discovery.
+        # ---------------------------------------------------------
+        # 3. Discovery search queries
+        # ---------------------------------------------------------
+
         self.discovery_queries = [
+
             # 🇮🇳 Indian Trending Music
             "Viral Instagram songs India",
             "Trending Indian songs 2026",
@@ -88,7 +102,7 @@ class SearchEngine:
             "Indian YouTube trending songs",
             "Instagram viral songs Hindi",
 
-            # 🎵 Hindi and Bollywood
+            # 🎵 Hindi / Bollywood
             "Hindi Hits",
             "Latest Bollywood hits",
             "Bollywood party songs",
@@ -99,7 +113,7 @@ class SearchEngine:
             "Hindi indie songs",
             "Hindi acoustic songs",
 
-            # 🕉️ Bhakti and Devotional
+            # 🕉️ Bhakti / Devotional
             "Bhakti Hits",
             "Latest Hindi devotional songs",
             "Hanuman bhajan hits",
@@ -108,7 +122,7 @@ class SearchEngine:
             "Ram bhajan trending songs",
             "Mahadev devotional songs",
 
-            # 🎤 Punjabi Music
+            # 🎤 Punjabi
             "Punjabi Hits songs",
             "Latest Punjabi songs",
             "Punjabi viral songs",
@@ -117,7 +131,7 @@ class SearchEngine:
             "Punjabi hip hop songs",
             "Punjabi lo-fi songs",
 
-            # 🎧 Phonk and Electronic
+            # 🎧 Phonk / Electronic
             "Viral Instagram phonk",
             "Indian phonk songs",
             "Hindi phonk remix",
@@ -126,7 +140,7 @@ class SearchEngine:
             "Indian trap music",
             "Viral bass boosted songs",
 
-            # 🌎 International Music Popular in India
+            # 🌎 International
             "Top global viral hits songs",
             "Popular English songs in India",
             "International Instagram viral songs",
@@ -134,7 +148,7 @@ class SearchEngine:
             "Trending English pop songs",
             "Top global EDM hits",
 
-            # 🎼 Regional Indian Music
+            # 🎼 Regional Indian
             "Latest Marathi hit songs",
             "Marathi viral songs",
             "South Indian trending songs",
@@ -145,7 +159,7 @@ class SearchEngine:
             "Haryanvi viral songs",
             "Bhojpuri hit songs",
 
-            # 🌙 Mood-based Discovery
+            # 🌙 Mood based
             "Relaxing Hindi songs",
             "Hindi chill playlist",
             "Indian night drive songs",
@@ -155,9 +169,93 @@ class SearchEngine:
             "Indian rain songs",
         ]
 
-    # =========================================================
+    # =============================================================
+    # INTERNAL HELPERS
+    # =============================================================
+
+    def _placeholder_path(self) -> str:
+        """
+        Return an absolute path to the placeholder image.
+        """
+
+        base_dir = os.path.dirname(
+            os.path.abspath(__file__)
+        )
+
+        return os.path.join(
+            base_dir,
+            "assets",
+            "placeholder.png",
+        )
+
+    def _get_thumbnail(self, entry: dict) -> str:
+        """
+        Safely extract a thumbnail URL from a yt-dlp entry.
+        """
+
+        thumbnail = entry.get("thumbnail")
+
+        if thumbnail:
+            return thumbnail
+
+        thumbnails = entry.get("thumbnails") or []
+
+        # Search from highest-quality/latest entries first
+        for item in reversed(thumbnails):
+            if not item:
+                continue
+
+            url = item.get("url")
+
+            if url:
+                return url
+
+        return self._placeholder_path()
+
+    def _build_track_dict(
+        self,
+        entry: dict,
+        default_uploader: str = "Unknown Artist",
+    ) -> Optional[dict]:
+        """
+        Convert a yt-dlp entry into the application's
+        standard track dictionary.
+        """
+
+        if not entry:
+            return None
+
+        video_id = entry.get("id")
+
+        if not video_id:
+            return None
+
+        title = entry.get("title") or "Unknown Track"
+
+        uploader = (
+            entry.get("uploader")
+            or entry.get("channel")
+            or default_uploader
+        )
+
+        webpage_url = (
+            entry.get("webpage_url")
+            or entry.get("original_url")
+            or f"https://www.youtube.com/watch?v={video_id}"
+        )
+
+        return {
+            "id": video_id,
+            "title": title,
+            "uploader": uploader,
+            "duration": entry.get("duration") or 0,
+            "thumbnail": self._get_thumbnail(entry),
+            "webpage_url": webpage_url,
+        }
+
+    # =============================================================
     # 1. CLEAN SONG TITLE
-    # =========================================================
+    # =============================================================
 
     def _extract_clean_title(
         self,
@@ -165,14 +263,8 @@ class SearchEngine:
         artist: str = "",
     ) -> str:
         """
-        Simplify a YouTube song title.
-
-        Removes:
-        - Bracketed descriptions
-        - Parenthesized descriptions
-        - Artist names before separators
-        - Common video metadata
-        - Special characters
+        Convert a YouTube title into a simplified title
+        for duplicate/variant detection.
         """
 
         if not full_title:
@@ -180,34 +272,61 @@ class SearchEngine:
 
         cleaned = full_title.strip()
 
-        # Remove square-bracket content.
-        # Example: Song Name [Official Video]
-        cleaned = re.sub(r"\[[^\]]*\]", "", cleaned)
+        # ---------------------------------------------------------
+        # Remove square bracket sections
+        #
+        # Example:
+        # Song Name [Official Video]
+        # -> Song Name
+        # ---------------------------------------------------------
 
-        # Remove parentheses content.
-        # Example: Song Name (Lyrics)
-        cleaned = re.sub(r"\([^)]*\)", "", cleaned)
+        cleaned = re.sub(
+            r"\[[^\]]*\]",
+            "",
+            cleaned,
+        )
 
-        # Remove the artist portion before " - ".
-        # Example: Artist - Song Name
-        if " - " in cleaned:
-            parts = cleaned.split(" - ", 1)
+        # ---------------------------------------------------------
+        # Remove parentheses
+        #
+        # Example:
+        # Song Name (Official Audio)
+        # -> Song Name
+        # ---------------------------------------------------------
 
-            if artist and artist.lower() in parts[0].lower():
-                cleaned = parts[1]
-            else:
-                cleaned = parts[1]
+        cleaned = re.sub(
+            r"\([^)]*\)",
+            "",
+            cleaned,
+        )
 
-        # Handle pipe-separated titles.
-        # Example: Song Name | Official Audio
-        elif " | " in cleaned:
-            cleaned = cleaned.split(" | ", 1)[0]
+        # ---------------------------------------------------------
+        # Remove artist prefix when it matches the uploader
+        #
+        # Example:
+        # Arijit Singh - Kesariya
+        # -> Kesariya
+        # ---------------------------------------------------------
 
-        # Remove common metadata words.
+        if artist and " - " in cleaned:
+
+            first_part, second_part = cleaned.split(
+                " - ",
+                1,
+            )
+
+            if first_part.strip().lower() in artist.lower():
+                cleaned = second_part
+
+        # ---------------------------------------------------------
+        # Remove common YouTube noise
+        # ---------------------------------------------------------
+
         noise_pattern = re.compile(
             r"\b("
             r"official\s+video|"
             r"official\s+audio|"
+            r"official|"
             r"music\s+video|"
             r"lyric\s+video|"
             r"lyrics|"
@@ -226,19 +345,36 @@ class SearchEngine:
             re.IGNORECASE,
         )
 
-        cleaned = noise_pattern.sub("", cleaned)
+        cleaned = noise_pattern.sub(
+            "",
+            cleaned,
+        )
 
-        # Remove special characters.
-        cleaned = re.sub(r"[^\w\s]", "", cleaned)
+        # ---------------------------------------------------------
+        # Remove punctuation
+        # ---------------------------------------------------------
 
-        # Remove extra spaces.
-        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        cleaned = re.sub(
+            r"[^\w\s]",
+            "",
+            cleaned,
+        )
+
+        # ---------------------------------------------------------
+        # Normalize whitespace
+        # ---------------------------------------------------------
+
+        cleaned = re.sub(
+            r"\s+",
+            " ",
+            cleaned,
+        ).strip()
 
         return cleaned.lower()
 
-    # =========================================================
+    # =============================================================
     # 2. CHECK FOR SAME SONG OR VARIANT
-    # =========================================================
+    # =============================================================
 
     def _is_same_or_variant(
         self,
@@ -246,39 +382,49 @@ class SearchEngine:
         clean_seed_title: str,
     ) -> bool:
         """
-        Check whether a candidate title is the same song
-        or a likely variant of the original song.
+        Determine whether a candidate is probably the same
+        song or a close variant of the seed song.
         """
 
-        candidate_clean = self._extract_clean_title(candidate_title)
+        candidate_clean = self._extract_clean_title(
+            candidate_title
+        )
 
         if not clean_seed_title or not candidate_clean:
             return False
 
-        # Direct title containment.
+        # Exact match
+        if candidate_clean == clean_seed_title:
+            return True
+
+        # One title completely contains the other
         if (
             clean_seed_title in candidate_clean
             or candidate_clean in clean_seed_title
         ):
             return True
 
-        # Compare meaningful words.
+        # Word-based comparison
         seed_words = {
             word
             for word in clean_seed_title.split()
             if len(word) > 2
         }
 
-        candidate_words = set(candidate_clean.split())
+        candidate_words = set(
+            candidate_clean.split()
+        )
 
-        if seed_words and seed_words.issubset(candidate_words):
+        if seed_words and seed_words.issubset(
+            candidate_words
+        ):
             return True
 
         return False
 
-    # =========================================================
+    # =============================================================
     # 3. SEARCH YOUTUBE
-    # =========================================================
+    # =============================================================
 
     def search_tracks(
         self,
@@ -286,14 +432,22 @@ class SearchEngine:
         max_results: int = 9,
     ) -> list[dict]:
         """
-        Search YouTube for tracks.
-
-        Returns a list of dictionaries containing:
-        ID, title, uploader, duration, thumbnail, and URL.
+        Search YouTube and return normalized track dictionaries.
         """
+
+        if not query or not query.strip():
+            return []
+
+        # Prevent invalid values
+        max_results = max(
+            1,
+            min(int(max_results), 50),
+        )
 
         options = {
             **self.base_opts,
+
+            # Return metadata without downloading
             "extract_flat": True,
             "skip_download": True,
         }
@@ -301,82 +455,70 @@ class SearchEngine:
         results = []
 
         try:
+
             with yt_dlp.YoutubeDL(options) as ydl:
+
+                search_url = (
+                    f"ytsearch{max_results}:"
+                    f"{query.strip()}"
+                )
+
                 info = ydl.extract_info(
-                    f"ytsearch{max_results}:{query}",
+                    search_url,
                     download=False,
                 )
 
+                if not info:
+                    return []
+
                 for entry in info.get("entries", []):
-                    if not entry:
-                        continue
 
-                    video_id = entry.get("id")
-
-                    if not video_id:
-                        continue
-
-                    thumbnails = entry.get("thumbnails") or []
-
-                    thumbnail = entry.get("thumbnail", "")
-
-                    if not thumbnail and thumbnails:
-                        thumbnail = thumbnails[-1].get("url", "")
-
-                    results.append(
-                        {
-                            "id": video_id,
-                            "title": entry.get(
-                                "title",
-                                "Unknown Track",
-                            ),
-                            "uploader": (
-                                entry.get("uploader")
-                                or entry.get("channel")
-                                or "Unknown Artist"
-                            ),
-                            "duration": entry.get("duration") or 0,
-                            "thumbnail": thumbnail,
-                            "webpage_url": (
-                                entry.get("webpage_url")
-                                or entry.get("url")
-                                or (
-                                    "https://www.youtube.com/watch?v="
-                                    f"{video_id}"
-                                )
-                            ),
-                        }
+                    track = self._build_track_dict(
+                        entry
                     )
 
+                    if track:
+                        results.append(track)
+
         except Exception as error:
-            print(f"[Search Error] {error}")
+
+            print(
+                f"[Search Error] {error}"
+            )
 
         return results
 
-    # =========================================================
+    # =============================================================
     # 4. RANDOM MUSIC DISCOVERY
-    # =========================================================
+    # =============================================================
 
     def get_trending_tracks(
         self,
         count: int = 9,
     ) -> list[dict]:
         """
-        Select a random discovery query and search YouTube.
+        Return randomly discovered music.
 
-        A different query may be selected on each call.
+        Note:
+        This searches discovery queries; it does not directly
+        query YouTube's official Trending Music chart.
         """
 
-        random_seed = random.choice(self.discovery_queries)
+        if count <= 0:
+            return []
+
+        random_seed = random.choice(
+            self.discovery_queries
+        )
 
         return self.search_tracks(
             random_seed,
             max_results=count,
         )
 
-    # =========================================================
+    # =============================================================
     # 5. GET SIMILAR TRACKS
-    # =========================================================
+    # =============================================================
 
     def get_similar_tracks(
         self,
@@ -384,118 +526,150 @@ class SearchEngine:
         count: int = 8,
     ) -> list[dict]:
         """
-        Find tracks related to the currently playing song.
+        Find tracks similar to the currently playing track.
 
-        First:
-            Try YouTube's Mix/Radio playlist.
+        Method 1:
+            YouTube Radio Mix
 
-        Fallback:
-            Search using the artist's name.
-
-        The original song and obvious variants are excluded.
+        Method 2:
+            Artist/uploader fallback search
         """
 
-        video_id = current_track.get("id")
-        raw_title = current_track.get("title", "")
-        artist = current_track.get("uploader", "")
+        if not current_track or count <= 0:
+            return []
 
-        clean_seed_title = self._extract_clean_title(
-            raw_title,
-            artist,
+        video_id = current_track.get(
+            "id",
+            "",
+        )
+
+        raw_title = current_track.get(
+            "title",
+            "",
+        )
+
+        artist = current_track.get(
+            "uploader",
+            "",
+        )
+
+        clean_seed_title = (
+            self._extract_clean_title(
+                raw_title,
+                artist,
+            )
         )
 
         results = []
 
-        # -----------------------------------------------------
+        # =========================================================
         # METHOD 1: YOUTUBE RADIO MIX
-        # -----------------------------------------------------
+        # =========================================================
 
         if video_id:
+
             mix_url = (
-                f"https://www.youtube.com/watch?v={video_id}"
-                f"&list=RD{video_id}"
+                "https://www.youtube.com/watch?"
+                f"v={video_id}&list=RD{video_id}"
             )
 
             options = {
                 **self.base_opts,
+
                 "extract_flat": True,
+
+                # Request extra results because some may be
+                # duplicates or unusable entries.
                 "playlist_items": f"1-{count + 15}",
+
                 "skip_download": True,
             }
 
             try:
+
                 with yt_dlp.YoutubeDL(options) as ydl:
+
                     info = ydl.extract_info(
                         mix_url,
                         download=False,
                     )
 
-                    for entry in info.get("entries", []):
-                        if not entry:
-                            continue
+                    if info:
 
-                        candidate_id = entry.get("id")
-                        candidate_title = entry.get("title", "")
-
-                        if not candidate_id:
-                            continue
-
-                        # Skip the original song.
-                        if candidate_id == video_id:
-                            continue
-
-                        # Skip the same song or obvious variants.
-                        if self._is_same_or_variant(
-                            candidate_title,
-                            clean_seed_title,
+                        for entry in info.get(
+                            "entries",
+                            [],
                         ):
-                            continue
 
-                        thumbnails = entry.get("thumbnails") or []
+                            if not entry:
+                                continue
 
-                        thumbnail = entry.get("thumbnail", "")
+                            candidate_id = entry.get(
+                                "id"
+                            )
 
-                        if not thumbnail and thumbnails:
-                            thumbnail = thumbnails[-1].get("url", "")
+                            candidate_title = (
+                                entry.get(
+                                    "title",
+                                    "",
+                                )
+                            )
 
-                        if not thumbnail:
-                            thumbnail = "assets/placeholder.png"
+                            # Skip current track
+                            if (
+                                not candidate_id
+                                or candidate_id == video_id
+                            ):
+                                continue
 
-                        results.append(
-                            {
-                                "id": candidate_id,
-                                "title": candidate_title,
-                                "uploader": (
-                                    entry.get("uploader")
-                                    or entry.get("channel")
-                                    or "Various Artists"
-                                ),
-                                "duration": entry.get("duration") or 0,
-                                "thumbnail": thumbnail,
-                                "webpage_url": (
-                                    entry.get("webpage_url")
-                                    or entry.get("url")
-                                    or (
-                                        "https://www.youtube.com/watch?v="
-                                        f"{candidate_id}"
-                                    )
-                                ),
-                            }
-                        )
+                            # Skip same song / variants
+                            if self._is_same_or_variant(
+                                candidate_title,
+                                clean_seed_title,
+                            ):
+                                continue
 
-                        if len(results) >= count:
-                            break
+                            candidate = (
+                                self._build_track_dict(
+                                    entry,
+                                    default_uploader=(
+                                        "Various Artists"
+                                    ),
+                                )
+                            )
+
+                            if not candidate:
+                                continue
+
+                            # Prevent duplicate IDs
+                            if any(
+                                item.get("id")
+                                == candidate_id
+                                for item in results
+                            ):
+                                continue
+
+                            results.append(candidate)
+
+                            if len(results) >= count:
+                                break
 
             except Exception as error:
-                print(f"[Radio Mix Fetch Notice] {error}")
 
-        # -----------------------------------------------------
-        # METHOD 2: FALLBACK ARTIST SEARCH
-        # -----------------------------------------------------
+                print(
+                    f"[Radio Mix Fetch Notice] "
+                    f"{error}"
+                )
 
-        if len(results) < count:
+        # =========================================================
+        # METHOD 2: FALLBACK SEARCH
+        # =========================================================
+
+        if len(results) < count and artist:
+
             fallback_query = (
-                f"{artist} radio mix playlist top tracks"
+                f"{artist} radio mix "
+                f"playlist top tracks"
             )
 
             candidates = self.search_tracks(
@@ -504,37 +678,47 @@ class SearchEngine:
             )
 
             for candidate in candidates:
-                candidate_id = candidate.get("id")
-                candidate_title = candidate.get("title", "")
 
-                # Skip the original video.
+                candidate_id = candidate.get(
+                    "id"
+                )
+
+                candidate_title = candidate.get(
+                    "title",
+                    "",
+                )
+
+                # Skip current song
                 if candidate_id == video_id:
                     continue
 
-                # Skip the same song or its variants.
+                # Skip same song / variants
                 if self._is_same_or_variant(
                     candidate_title,
                     clean_seed_title,
                 ):
                     continue
 
-                # Avoid duplicate video IDs.
+                # Skip duplicate IDs
                 if any(
-                    result.get("id") == candidate_id
-                    for result in results
+                    item.get("id") == candidate_id
+                    for item in results
                 ):
                     continue
 
-                # Avoid duplicate or nearly identical titles.
-                if any(
+                # Skip songs that look like variants
+                # of songs already recommended
+                is_duplicate_variant = any(
                     self._is_same_or_variant(
                         candidate_title,
                         self._extract_clean_title(
-                            result.get("title", "")
+                            item.get("title", "")
                         ),
                     )
-                    for result in results
-                ):
+                    for item in results
+                )
+
+                if is_duplicate_variant:
                     continue
 
                 results.append(candidate)
@@ -544,45 +728,212 @@ class SearchEngine:
 
         return results
 
-    # =========================================================
-    # 6. DOWNLOAD AND PREPARE AUDIO
-    # =========================================================
+    # =============================================================
+    # 6. READ AUDIO DURATION
+    # =============================================================
 
-    def prepare_audio_file(self, video_url: str, track_id: str) -> tuple[str | None, float]:
-        target_path = os.path.abspath(os.path.join(self.cache_dir, f"{track_id}.m4a"))
-        duration = 0.0
+    def _get_audio_duration(
+        self,
+        filepath: str,
+    ) -> float:
+        """
+        Read duration from an existing audio file.
+        """
 
-        opts = {
+        try:
+
+            media_file = mutagen.File(
+                filepath
+            )
+
+            if (
+                media_file
+                and media_file.info
+                and hasattr(
+                    media_file.info,
+                    "length",
+                )
+            ):
+                return float(
+                    media_file.info.length
+                )
+
+        except Exception:
+            pass
+
+        return 0.0
+
+    # =============================================================
+    # 7. FIND CACHED AUDIO FILE
+    # =============================================================
+
+    def _find_cached_file(
+        self,
+        track_id: str,
+    ) -> Optional[str]:
+        """
+        Look for an already downloaded audio file.
+        """
+
+        supported_extensions = (
+            "m4a",
+            "mp3",
+            "ogg",
+            "opus",
+            "webm",
+        )
+
+        for ext in supported_extensions:
+
+            candidate = os.path.abspath(
+                os.path.join(
+                    self.cache_dir,
+                    f"{track_id}.{ext}",
+                )
+            )
+
+            if not os.path.isfile(candidate):
+                continue
+
+            try:
+                if os.path.getsize(candidate) <= 1024:
+                    continue
+            except OSError:
+                continue
+
+            return candidate
+
+        return None
+
+    # =============================================================
+    # 8. DOWNLOAD AND PREPARE AUDIO
+    # =============================================================
+
+    def prepare_audio_file(
+        self,
+        video_url: str,
+        track_id: str,
+    ) -> tuple[Optional[str], float]:
+        """
+        Download audio if it is not already cached.
+
+        Returns:
+            (file_path, duration)
+
+        If unsuccessful:
+            (None, 0.0)
+        """
+
+        if not track_id:
+            return None, 0.0
+
+        # ---------------------------------------------------------
+        # Create YouTube URL if only ID was provided
+        # ---------------------------------------------------------
+
+        if not video_url:
+            video_url = (
+                "https://www.youtube.com/watch?v="
+                f"{track_id}"
+            )
+
+        # ---------------------------------------------------------
+        # STEP 1: Check local cache
+        # ---------------------------------------------------------
+
+        cached_file = self._find_cached_file(
+            track_id
+        )
+
+        if cached_file:
+
+            duration = (
+                self._get_audio_duration(
+                    cached_file
+                )
+            )
+
+            return cached_file, duration
+
+        # ---------------------------------------------------------
+        # STEP 2: Download
+        # ---------------------------------------------------------
+
+        output_template = os.path.join(
+            self.cache_dir,
+            f"{track_id}.%(ext)s",
+        )
+
+        options = {
             **self.base_opts,
-            'format': 'bestaudio[ext=m4a]/bestaudio/best',
-            'outtmpl': os.path.join(self.cache_dir, f"{track_id}.%(ext)s"),
+
+            # Prefer M4A, otherwise let yt-dlp select
+            # the best available audio.
+            "format": (
+                "bestaudio[ext=m4a]"
+                "/bestaudio/best"
+            ),
+
+            "outtmpl": output_template,
+
+            "noplaylist": True,
         }
 
-        if not os.path.exists(target_path):
-            try:
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    info = ydl.extract_info(video_url, download=True)
-                    if info and info.get('duration'):
-                        duration = float(info['duration'])
-            except Exception as err:
-                print(f"[Download Error] {err}")
+        duration = 0.0
 
-        final_file = None
-        for ext in ('m4a', 'mp3', 'ogg', 'opus', 'webm'):
-            candidate = os.path.abspath(os.path.join(self.cache_dir, f"{track_id}.{ext}"))
-            if os.path.exists(candidate):
-                final_file = candidate
-                break
+        try:
+
+            with yt_dlp.YoutubeDL(
+                options
+            ) as ydl:
+
+                info = ydl.extract_info(
+                    video_url,
+                    download=True,
+                )
+
+                if info:
+
+                    raw_duration = info.get(
+                        "duration"
+                    )
+
+                    if raw_duration:
+                        duration = float(
+                            raw_duration
+                        )
+
+        except Exception as error:
+
+            print(
+                f"[Download Error] {error}"
+            )
+
+            return None, 0.0
+
+        # ---------------------------------------------------------
+        # STEP 3: Locate downloaded file
+        # ---------------------------------------------------------
+
+        final_file = (
+            self._find_cached_file(
+                track_id
+            )
+        )
 
         if not final_file:
             return None, 0.0
 
+        # ---------------------------------------------------------
+        # STEP 4: Read duration from file if necessary
+        # ---------------------------------------------------------
+
         if duration <= 0:
-            try:
-                mf = mutagen.File(final_file)
-                if mf and mf.info and hasattr(mf.info, 'length'):
-                    duration = float(mf.info.length)
-            except Exception:
-                pass
+
+            duration = (
+                self._get_audio_duration(
+                    final_file
+                )
+            )
 
         return final_file, duration

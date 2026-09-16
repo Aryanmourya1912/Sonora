@@ -1,20 +1,6 @@
 import os
 from kivy.utils import platform
 
-if platform == 'android':
-    from jnius import autoclass
-    PythonActivity = autoclass('org.kivy.android.PythonActivity')
-    Context = autoclass('android.content.Context')
-    Intent = autoclass('android.content.Intent')
-    PendingIntent = autoclass('android.app.PendingIntent')
-    NotificationManager = autoclass('android.app.NotificationManager')
-    NotificationChannel = autoclass('android.app.NotificationChannel')
-    Notification = autoclass('android.app.Notification')
-    NotificationBuilder = autoclass('android.app.Notification$Builder')
-    R_drawable = autoclass('android.R$drawable')
-else:
-    PythonActivity = None
-
 
 class PlaybackNotificationManager:
     CHANNEL_ID = "music_player_channel"
@@ -27,64 +13,92 @@ class PlaybackNotificationManager:
     def __init__(self):
         self.manager = None
         self.activity = None
+        self.available = False
+
         if platform == 'android':
-            self.activity = PythonActivity.mActivity
-            self.manager = self.activity.getSystemService(Context.NOTIFICATION_SERVICE)
-            self._create_channel()
+            try:
+                from jnius import autoclass, cast  # type: ignore
+
+                self.autoclass = autoclass
+                self.cast = cast
+
+                self.PythonActivity = autoclass('org.kivy.android.PythonActivity')
+                self.Context = autoclass('android.content.Context')
+                self.Intent = autoclass('android.content.Intent')
+                self.PendingIntent = autoclass('android.app.PendingIntent')
+                self.NotificationManager = autoclass('android.app.NotificationManager')
+                self.NotificationChannel = autoclass('android.app.NotificationChannel')
+                self.Notification = autoclass('android.app.Notification')
+                self.NotificationBuilder = autoclass('android.app.Notification$Builder')
+                self.R_drawable = autoclass('android.R$drawable')
+                self.String = autoclass('java.lang.String')
+
+                self.activity = self.PythonActivity.mActivity
+                if self.activity:
+                    self.manager = self.activity.getSystemService(self.Context.NOTIFICATION_SERVICE)
+                    self._create_channel()
+                    self.available = True
+                else:
+                    print("[Notification Helper] PythonActivity.mActivity is None")
+            except Exception as init_err:
+                print(f"[Notification Helper Init Error] {init_err}")
 
     def _create_channel(self):
         try:
-            # Importance LOW (2) ensures controls appear without an intrusive sound on each track change
-            channel = NotificationChannel(
+            name = self.cast('java.lang.CharSequence', self.String("Playback Controls"))
+            channel = self.NotificationChannel(
                 self.CHANNEL_ID,
-                "Playback Controls",
-                NotificationManager.IMPORTANCE_LOW
+                name,
+                self.NotificationManager.IMPORTANCE_LOW
             )
             channel.setDescription("Shows active music controls on lock screen")
-            channel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC)
+            channel.setLockscreenVisibility(self.Notification.VISIBILITY_PUBLIC)
             self.manager.createNotificationChannel(channel)
         except Exception as e:
             print(f"[Notification Channel Error] {e}")
 
     def _get_broadcast_pi(self, action_name: str, req_code: int):
-        intent = Intent(action_name)
+        intent = self.Intent(action_name)
         intent.setPackage(self.activity.getPackageName())
-        # FLAG_UPDATE_CURRENT (134217728) | FLAG_IMMUTABLE (67108864) for Android 12+
+        # FLAG_UPDATE_CURRENT (134217728) | FLAG_IMMUTABLE (67108864)
         flags = 134217728 | 67108864
-        return PendingIntent.getBroadcast(self.activity, req_code, intent, flags)
+        return self.PendingIntent.getBroadcast(self.activity, req_code, intent, flags)
 
     def _get_content_pi(self):
-        # Tapping the notification body brings the app back to the foreground
-        intent = Intent(self.activity, PythonActivity)
-        intent.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        # Pass self.activity.getClass() so PyJNIus matches (Context, Class)
+        intent = self.Intent(self.activity, self.activity.getClass())
+        intent.setFlags(self.Intent.FLAG_ACTIVITY_SINGLE_TOP)
         flags = 134217728 | 67108864
-        return PendingIntent.getActivity(self.activity, 0, intent, flags)
+        return self.PendingIntent.getActivity(self.activity, 0, intent, flags)
 
     def show(self, title: str, artist: str, is_playing: bool = True):
-        if platform != 'android' or not self.manager:
+        if not self.available or not self.manager or not self.activity:
             return
 
         try:
-            builder = NotificationBuilder(self.activity, self.CHANNEL_ID)
-            builder.setContentTitle(str(title or "Unknown Title"))
-            builder.setContentText(str(artist or "Unknown Artist"))
-            builder.setSmallIcon(R_drawable.ic_media_play)
-            builder.setContentIntent(self._get_content_pi())
+            builder = self.NotificationBuilder(self.activity, self.CHANNEL_ID)
             
-            # VISIBILITY_PUBLIC (1) shows song title and controls on the lockscreen
-            builder.setVisibility(Notification.VISIBILITY_PUBLIC)
+            t_str = self.cast('java.lang.CharSequence', self.String(str(title or "Unknown Title")))
+            a_str = self.cast('java.lang.CharSequence', self.String(str(artist or "Unknown Artist")))
+            
+            builder.setContentTitle(t_str)
+            builder.setContentText(a_str)
+            builder.setSmallIcon(self.R_drawable.ic_media_play)
+            builder.setContentIntent(self._get_content_pi())
+            builder.setVisibility(self.Notification.VISIBILITY_PUBLIC)
             builder.setOngoing(is_playing)
 
             # 1. Previous Button
+            prev_label = self.cast('java.lang.CharSequence', self.String("Previous"))
             builder.addAction(
-                R_drawable.ic_media_previous,
-                "Previous",
+                self.R_drawable.ic_media_previous,
+                prev_label,
                 self._get_broadcast_pi(self.ACTION_PREV, 1)
             )
 
             # 2. Play / Pause Button
-            toggle_icon = R_drawable.ic_media_pause if is_playing else R_drawable.ic_media_play
-            toggle_text = "Pause" if is_playing else "Play"
+            toggle_icon = self.R_drawable.ic_media_pause if is_playing else self.R_drawable.ic_media_play
+            toggle_text = self.cast('java.lang.CharSequence', self.String("Pause" if is_playing else "Play"))
             builder.addAction(
                 toggle_icon,
                 toggle_text,
@@ -92,9 +106,10 @@ class PlaybackNotificationManager:
             )
 
             # 3. Next Button
+            next_label = self.cast('java.lang.CharSequence', self.String("Next"))
             builder.addAction(
-                R_drawable.ic_media_next,
-                "Next",
+                self.R_drawable.ic_media_next,
+                next_label,
                 self._get_broadcast_pi(self.ACTION_NEXT, 3)
             )
 
@@ -103,7 +118,7 @@ class PlaybackNotificationManager:
             print(f"[Notification Show Error] {e}")
 
     def cancel(self):
-        if platform == 'android' and self.manager:
+        if self.available and self.manager:
             try:
                 self.manager.cancel(self.NOTIFICATION_ID)
             except Exception:
