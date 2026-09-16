@@ -1,6 +1,5 @@
 import os
 from kivy.metrics import dp
-from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.floatlayout import FloatLayout
 from kivymd.uix.boxlayout import MDBoxLayout
 from kivymd.uix.gridlayout import MDGridLayout
@@ -14,12 +13,33 @@ from kivymd.uix.list import MDList
 from kivymd.uix.fitimage import FitImage
 
 
-class ClickableCard(ButtonBehavior, MDCard):
-    """MDCard with button click and touch release events enabled."""
-    pass
+class ClickableCard(MDCard):
+    """MDCard with clean on_release dispatching without MRO conflicts."""
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.register_event_type('on_release')
+
+    def on_touch_down(self, touch):
+        if self.collide_point(*touch.pos):
+            if super().on_touch_down(touch):
+                return True
+            touch.grab(self)
+            return True
+        return super().on_touch_down(touch)
+
+    def on_touch_up(self, touch):
+        if touch.grab_current is self:
+            touch.ungrab(self)
+            if self.collide_point(*touch.pos):
+                self.dispatch('on_release')
+            return True
+        return super().on_touch_up(touch)
+
+    def on_release(self, *args):
+        pass
 
 
-class SongCard(ButtonBehavior, MDCard):
+class SongCard(ClickableCard):
     """Compact song card for the horizontal Speed Dial."""
     def __init__(self, track_data: dict, on_click_callback, **kwargs):
         super().__init__(**kwargs)
@@ -87,7 +107,7 @@ class PlayerScreen(FloatLayout):
         top_bar.add_widget(self.btn_history)
         self.root_layout.add_widget(top_bar)
 
-        # SEARCH BAR (Fixed: mode set to 'rectangle' for KivyMD 1.2.0)
+        # SEARCH BAR
         self.search_box = MDBoxLayout(
             orientation="horizontal",
             size_hint_y=None,
