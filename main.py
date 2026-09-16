@@ -193,6 +193,15 @@ def _run_app():
                 menu.dismiss()
             action_func()
 
+        def _request_android_permissions(self):
+            """Triggers the Android 13+ (API 33) notification permission prompt."""
+            if platform == 'android':
+                try:
+                    from android.permissions import request_permissions  # type: ignore
+                    request_permissions(['android.permission.POST_NOTIFICATIONS'])
+                except Exception as pe:
+                    print(f"[Permission Request Error] {pe}")
+
         def build(self):
             self.theme_cls.theme_style = "Dark"
             self.theme_cls.primary_palette = "Amber"
@@ -277,6 +286,9 @@ def _run_app():
             Clock.schedule_once(lambda dt: self._safe_restore_state(), 0.05)
             Clock.schedule_interval(self._update_progress, 0.25)
             threading.Thread(target=self._load_dynamic_home_music, daemon=True).start()
+
+                # Request Android 13+ notification permissions
+            Clock.schedule_once(lambda dt: self._request_android_permissions(), 0.8)
 
             return self.screen
 

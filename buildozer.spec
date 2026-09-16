@@ -16,7 +16,7 @@ source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,db,ogg,ttf
 
 # (str) Application versioning
-version = 0.19
+version = 0.20
 
 # (list) Application requirements
 # Fixed: Added 'openssl' for HTTPS/SSL support and 'android' for android.broadcast
