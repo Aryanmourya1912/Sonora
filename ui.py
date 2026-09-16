@@ -59,7 +59,7 @@ class PlayerScreen(FloatLayout):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
-        # ----------------- MAIN BACKGROUND CONTAINER -----------------
+        # ----------------- MAIN CONTAINER -----------------
         self.root_layout = MDBoxLayout(
             orientation="vertical",
             size_hint=(1, 1),
@@ -87,7 +87,7 @@ class PlayerScreen(FloatLayout):
         top_bar.add_widget(self.btn_history)
         self.root_layout.add_widget(top_bar)
 
-        # SEARCH BAR (HIDDEN ON HOME, VISIBLE ON SEARCH TAB)
+        # SEARCH BAR (Fixed: mode set to 'rectangle' for KivyMD 1.2.0)
         self.search_box = MDBoxLayout(
             orientation="horizontal",
             size_hint_y=None,
@@ -97,7 +97,7 @@ class PlayerScreen(FloatLayout):
         )
         self.search_input = MDTextField(
             hint_text="Search songs, artists...",
-            mode="round",
+            mode="rectangle",
             size_hint_x=0.85
         )
         self.btn_search_go = MDIconButton(icon="magnify")
@@ -164,7 +164,7 @@ class PlayerScreen(FloatLayout):
         self.main_scroll.add_widget(self.list_view)
         self.root_layout.add_widget(self.main_scroll)
 
-        # COMPACT FLOATING MINI-PLAYER
+        # FLOATING MINI-PLAYER
         self.mini_card = MDCard(
             orientation="vertical",
             size_hint=(1, None),
@@ -208,7 +208,6 @@ class PlayerScreen(FloatLayout):
         self.mini_text_box.add_widget(self.mini_title)
         self.mini_text_box.add_widget(self.mini_artist)
 
-        # Fixed: Replaced user_font_size with icon_size
         self.btn_mini_play = MDIconButton(icon="play-circle", icon_size="28sp")
         self.btn_mini_next = MDIconButton(icon="skip-next", icon_size="24sp")
         self.btn_mini_more = MDIconButton(icon="dots-vertical", icon_size="20sp")
@@ -222,7 +221,7 @@ class PlayerScreen(FloatLayout):
 
         self.root_layout.add_widget(self.mini_card)
 
-        # BOTTOM NAVIGATION BAR
+        # BOTTOM NAVIGATION
         nav_bar = MDBoxLayout(
             orientation="horizontal",
             size_hint_y=None,
@@ -248,16 +247,15 @@ class PlayerScreen(FloatLayout):
 
         self.add_widget(self.root_layout)
 
-        # ----------------- 100% FULL-SCREEN EXPANDED PLAYER -----------------
+        # ----------------- FULL-SCREEN EXPANDED PLAYER -----------------
         self.full_player = MDBoxLayout(
             orientation="vertical",
             size_hint=(1, 1),
-            pos_hint={'x': 0, 'y': -1},  # Starts hidden below screen
+            pos_hint={'x': 0, 'y': -1},
             md_bg_color=(0.10, 0.10, 0.10, 1),
             padding=[dp(20), dp(16), dp(20), dp(16)]
         )
 
-        # DRAG HANDLE & TOP BAR
         self.top_drag_bar = MDBoxLayout(size_hint=(1, None), height=dp(10))
         self.full_player.add_widget(self.top_drag_bar)
 
@@ -288,7 +286,7 @@ class PlayerScreen(FloatLayout):
         art_card.add_widget(self.full_artwork)
         self.full_player.add_widget(art_card)
 
-        # SONG TITLE, ARTIST, HEART & SHARE
+        # TITLE & ARTIST
         title_box = MDBoxLayout(size_hint_y=None, height=dp(56), spacing=dp(8))
         text_sub = MDBoxLayout(orientation="vertical", size_hint_x=0.7)
         self.full_title = MDLabel(text="Track Title", font_style="H6", bold=True, shorten=True)
@@ -303,7 +301,7 @@ class PlayerScreen(FloatLayout):
         title_box.add_widget(self.btn_like)
         self.full_player.add_widget(title_box)
 
-        # SCRUBBER SLIDER & TIMESTAMPS
+        # TIMELINE SLIDER
         self.full_slider = MDSlider(min=0, max=100, value=0, size_hint_y=None, height=dp(30), hint=False)
         time_row = MDBoxLayout(size_hint_y=None, height=dp(18))
         self.time_current = MDLabel(text="0:00", font_style="Caption", size_hint_x=0.5)
@@ -313,11 +311,10 @@ class PlayerScreen(FloatLayout):
         self.full_player.add_widget(self.full_slider)
         self.full_player.add_widget(time_row)
 
-        # CENTER PLAYBACK CONTROLS (PILL CAPSULE)
+        # CONTROLS
         controls = MDBoxLayout(size_hint_y=None, height=dp(70), spacing=dp(16))
         self.btn_full_prev = MDIconButton(icon="skip-previous", icon_size="32sp", pos_hint={'center_y': 0.5})
 
-        # Fixed: Now uses ClickableCard so on_release is supported
         self.btn_full_play_capsule = ClickableCard(
             size_hint=(None, None),
             size=(dp(130), dp(52)),
@@ -340,7 +337,7 @@ class PlayerScreen(FloatLayout):
         controls.add_widget(self.btn_full_next)
         self.full_player.add_widget(controls)
 
-        # BOTTOM UTILITY BAR
+        # UTILITY BAR
         util_bar = MDBoxLayout(size_hint_y=None, height=dp(48))
         self.btn_queue = MDIconButton(icon="playlist-play")
         self.btn_timer = MDIconButton(icon="moon-waning-crescent")

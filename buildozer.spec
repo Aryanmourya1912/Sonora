@@ -16,7 +16,7 @@ source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,db,ogg,ttf
 
 # (str) Application versioning
-version = 0.17
+version = 0.18
 
 # (list) Application requirements
 # Fixed: Added 'openssl' for HTTPS/SSL support and 'android' for android.broadcast
@@ -51,10 +51,10 @@ android.accept_sdk_license = True
 p4a.branch = v2024.01.21
 
 # (str) Icon of the application (uncomment if icon.png exists in root)
-# icon.filename = %(source.dir)s/icon.png
+icon.filename = %(source.dir)s/icon.png
 
 # (str) Presplash of the application (uncomment if splash.png exists in root)
-# presplash.filename = %(source.dir)s/splash.png
+presplash.filename = %(source.dir)s/splash.png
 
 [buildozer]
 
