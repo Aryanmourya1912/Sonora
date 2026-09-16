@@ -393,7 +393,6 @@ def _run_app():
             # Full Screen Controls (Image 2)
             self.screen.btn_full_prev_card.bind(on_release=lambda x: self._play_prev())
             self.screen.btn_full_play_capsule.bind(on_release=lambda x: self._toggle_play())
-            self.screen.capsule_icon.on_release = self._toggle_play
             self.screen.btn_full_next_card.bind(on_release=lambda x: self._play_next())
 
             self.screen.btn_share_card.bind(on_release=lambda x: self._copy_current_link())

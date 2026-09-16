@@ -7,7 +7,7 @@ from kivymd.uix.boxlayout import MDBoxLayout
 from kivymd.uix.gridlayout import MDGridLayout
 from kivymd.uix.scrollview import MDScrollView
 from kivymd.uix.card import MDCard
-from kivymd.uix.label import MDLabel
+from kivymd.uix.label import MDLabel, MDIcon
 from kivymd.uix.button import MDIconButton, MDRaisedButton
 from kivymd.uix.slider import MDSlider
 from kivymd.uix.list import MDList
@@ -15,23 +15,23 @@ from kivymd.uix.fitimage import FitImage
 
 
 class ClickableCard(MDCard):
-    """Touch-safe card supporting on_release without Python MRO conflicts."""
+    """Touch-safe card that dispatches on_release without Python MRO conflicts."""
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.register_event_type('on_release')
 
     def on_touch_down(self, touch):
-        if self.collide_point(*touch.pos):
-            if super().on_touch_down(touch):
-                return True
-            touch.grab(self)
+        if self.disabled or not self.collide_point(*touch.pos):
+            return super().on_touch_down(touch)
+        if super().on_touch_down(touch):
             return True
-        return super().on_touch_down(touch)
+        touch.grab(self)
+        return True
 
     def on_touch_up(self, touch):
         if touch.grab_current is self:
             touch.ungrab(self)
-            if self.collide_point(*touch.pos):
+            if not self.disabled and self.collide_point(*touch.pos):
                 self.dispatch('on_release')
             return True
         return super().on_touch_up(touch)
@@ -81,11 +81,14 @@ class TwoStageBottomSheet(FloatLayout):
         super().__init__(**kwargs)
         self.size_hint = (1, 1)
         self.pos_hint = {'x': 0, 'y': -1}
-        self.state = "closed"  # "closed", "half", "full"
+        self.state = "closed"
+        self.disabled = True
+        self.opacity = 0
 
         # Dimmed backdrop
         self.backdrop = ClickableCard(
             size_hint=(1, 1),
+            pos_hint={'x': 0, 'y': 0},
             md_bg_color=(0, 0, 0, 0.6),
             elevation=0
         )
@@ -125,9 +128,9 @@ class TwoStageBottomSheet(FloatLayout):
             md_bg_color=(0.74, 0.78, 0.96, 0.85),
             padding=[dp(12), dp(6)]
         )
-        self.preview_icon = MDIconButton(
+        self.preview_icon = MDIcon(
             icon="volume-high",
-            icon_size="20sp",
+            font_size="20sp",
             theme_text_color="Custom",
             text_color=(0.1, 0.12, 0.18, 1),
             pos_hint={'center_y': 0.5}
@@ -135,7 +138,7 @@ class TwoStageBottomSheet(FloatLayout):
         self.preview_bar.add_widget(self.preview_icon)
         self.sheet.add_widget(self.preview_bar)
 
-        # 3. Quick Action Row (3 rounded squircle cards)
+        # 3. Quick Action Row
         self.quick_row = MDBoxLayout(size_hint_y=None, height=dp(72), spacing=dp(10))
         self.btn_radio = self._create_quick_card("radio-tower", "Start radio")
         self.btn_add_playlist = self._create_quick_card("playlist-plus", "Add to playlist")
@@ -165,8 +168,22 @@ class TwoStageBottomSheet(FloatLayout):
 
         self.scroll.add_widget(self.actions_list)
         self.sheet.add_widget(self.scroll)
-
         self.add_widget(self.sheet)
+
+    def on_touch_down(self, touch):
+        if self.state == "closed" or self.disabled:
+            return False
+        return super().on_touch_down(touch)
+
+    def on_touch_move(self, touch):
+        if self.state == "closed" or self.disabled:
+            return False
+        return super().on_touch_move(touch)
+
+    def on_touch_up(self, touch):
+        if self.state == "closed" or self.disabled:
+            return False
+        return super().on_touch_up(touch)
 
     def _create_quick_card(self, icon: str, label: str):
         card = ClickableCard(
@@ -177,9 +194,10 @@ class TwoStageBottomSheet(FloatLayout):
             padding=[dp(6), dp(8)],
             spacing=dp(2)
         )
-        ic = MDIconButton(
+        ic = MDIcon(
             icon=icon,
-            icon_size="22sp",
+            font_size="22sp",
+            halign="center",
             pos_hint={'center_x': 0.5},
             theme_text_color="Custom",
             text_color=(0.9, 0.92, 0.98, 1)
@@ -205,9 +223,9 @@ class TwoStageBottomSheet(FloatLayout):
             padding=[dp(14), 0, dp(14), 0]
         )
         box = MDBoxLayout(orientation="horizontal", spacing=dp(14), pos_hint={'center_y': 0.5})
-        ic = MDIconButton(
+        ic = MDIcon(
             icon=icon,
-            icon_size="22sp",
+            font_size="22sp",
             theme_text_color="Custom",
             text_color=(0.85, 0.88, 0.96, 1),
             pos_hint={'center_y': 0.5}
@@ -226,11 +244,15 @@ class TwoStageBottomSheet(FloatLayout):
 
     def open_half(self):
         self.state = "half"
+        self.disabled = False
+        self.opacity = 1
         self.pos_hint = {'x': 0, 'y': 0}
         Animation(size_hint_y=0.56, duration=0.25, t='out_quad').start(self.sheet)
 
     def expand_full(self):
         self.state = "full"
+        self.disabled = False
+        self.opacity = 1
         Animation(size_hint_y=0.92, duration=0.25, t='out_quad').start(self.sheet)
 
     def toggle_expand(self):
@@ -241,7 +263,8 @@ class TwoStageBottomSheet(FloatLayout):
 
     def close(self):
         self.state = "closed"
-        anim = Animation(pos_hint={'x': 0, 'y': -1}, duration=0.22, t='in_quad')
+        self.disabled = True
+        anim = Animation(pos_hint={'x': 0, 'y': -1}, opacity=0, duration=0.22, t='in_quad')
         anim.start(self)
 
 
@@ -276,7 +299,7 @@ class PlayerScreen(FloatLayout):
         self.top_bar.add_widget(self.btn_history)
         self.root_layout.add_widget(self.top_bar)
 
-        # ----------------- MODERN SEARCH BAR (IMAGE 7) -----------------
+        # MODERN SEARCH HEADER
         self.search_header = MDBoxLayout(
             orientation="horizontal",
             size_hint_y=None,
@@ -355,13 +378,13 @@ class PlayerScreen(FloatLayout):
         self.speed_dial_scroll.add_widget(self.grid)
         self.root_layout.add_widget(self.speed_dial_scroll)
 
-        # SEARCH RESULTS / LIBRARY / SEARCH HISTORY LIST
+        # LIST VIEW
         self.main_scroll = MDScrollView(size_hint=(1, 1), bar_width=0)
         self.list_view = MDList()
         self.main_scroll.add_widget(self.list_view)
         self.root_layout.add_widget(self.main_scroll)
 
-        # ----------------- FLOATING MINI-PLAYER (IMAGE 7) -----------------
+        # FLOATING MINI-PLAYER
         self.mini_card = ClickableCard(
             orientation="vertical",
             size_hint=(0.94, None),
@@ -410,7 +433,7 @@ class PlayerScreen(FloatLayout):
 
         self.root_layout.add_widget(self.mini_card)
 
-        # ----------------- MODERN BOTTOM NAVIGATION BAR (IMAGE 7) -----------------
+        # BOTTOM NAVIGATION
         self.nav_bar = MDBoxLayout(
             orientation="horizontal",
             size_hint_y=None,
@@ -429,17 +452,18 @@ class PlayerScreen(FloatLayout):
 
         self.add_widget(self.root_layout)
 
-        # ----------------- FULL-SCREEN PLAYER (IMAGE 2) -----------------
+        # ----------------- FULL-SCREEN EXPANDED PLAYER -----------------
         self.full_player = MDBoxLayout(
             orientation="vertical",
             size_hint=(1, 1),
             pos_hint={'x': 0, 'y': -1},
+            disabled=True,
+            opacity=0,
             md_bg_color=(0.04, 0.06, 0.09, 1),
             padding=[dp(20), dp(16), dp(20), dp(16)],
             spacing=dp(8)
         )
 
-        # Top Bar
         full_top = MDBoxLayout(size_hint_y=None, height=dp(48))
         self.btn_close_full = MDIconButton(icon="chevron-down", icon_size="28sp")
         full_title_box = MDBoxLayout(orientation="vertical", pos_hint={'center_y': 0.5})
@@ -454,7 +478,6 @@ class PlayerScreen(FloatLayout):
         full_top.add_widget(self.btn_cast)
         self.full_player.add_widget(full_top)
 
-        # Artwork Card (Arch/Pill Card style like Image 2)
         art_card = MDCard(
             size_hint=(0.88, 0.44),
             pos_hint={'center_x': 0.5},
@@ -467,7 +490,6 @@ class PlayerScreen(FloatLayout):
         art_card.add_widget(self.full_artwork)
         self.full_player.add_widget(art_card)
 
-        # Song Title & Artist + Pill Buttons (Share & Heart)
         title_row = MDBoxLayout(size_hint_y=None, height=dp(58), spacing=dp(8))
         text_sub = MDBoxLayout(orientation="vertical", size_hint_x=0.68, pos_hint={'center_y': 0.5})
         self.full_title = MDLabel(text="Track Title", font_style="H6", bold=True, shorten=True)
@@ -475,7 +497,6 @@ class PlayerScreen(FloatLayout):
         text_sub.add_widget(self.full_title)
         text_sub.add_widget(self.full_artist)
 
-        # Share Squircle Button Card
         self.btn_share_card = ClickableCard(
             size_hint=(None, None),
             size=(dp(46), dp(46)),
@@ -483,15 +504,16 @@ class PlayerScreen(FloatLayout):
             md_bg_color=(0.16, 0.19, 0.26, 1),
             pos_hint={'center_y': 0.5}
         )
-        self.icon_share = MDIconButton(
+        self.icon_share = MDIcon(
             icon="share-variant-outline",
+            font_size="22sp",
+            halign="center",
             pos_hint={'center_x': 0.5, 'center_y': 0.5},
             theme_text_color="Custom",
             text_color=(0.85, 0.88, 0.98, 1)
         )
         self.btn_share_card.add_widget(self.icon_share)
 
-        # Like Squircle Button Card
         self.btn_like_card = ClickableCard(
             size_hint=(None, None),
             size=(dp(46), dp(46)),
@@ -499,8 +521,10 @@ class PlayerScreen(FloatLayout):
             md_bg_color=(0.16, 0.19, 0.26, 1),
             pos_hint={'center_y': 0.5}
         )
-        self.icon_like = MDIconButton(
+        self.icon_like = MDIcon(
             icon="heart-outline",
+            font_size="22sp",
+            halign="center",
             pos_hint={'center_x': 0.5, 'center_y': 0.5},
             theme_text_color="Custom",
             text_color=(0.85, 0.88, 0.98, 1)
@@ -512,7 +536,6 @@ class PlayerScreen(FloatLayout):
         title_row.add_widget(self.btn_like_card)
         self.full_player.add_widget(title_row)
 
-        # Timeline Slider & Timestamps
         self.full_slider = MDSlider(min=0, max=100, value=0, size_hint_y=None, height=dp(28), hint=False)
         time_row = MDBoxLayout(size_hint_y=None, height=dp(16))
         self.time_current = MDLabel(text="0:00", font_style="Caption", size_hint_x=0.5)
@@ -522,7 +545,7 @@ class PlayerScreen(FloatLayout):
         self.full_player.add_widget(self.full_slider)
         self.full_player.add_widget(time_row)
 
-        # ----------------- PLAYBACK ROW (IMAGE 2) -----------------
+        # Center Controls Row
         controls_row = MDBoxLayout(
             size_hint_y=None,
             height=dp(74),
@@ -530,7 +553,6 @@ class PlayerScreen(FloatLayout):
             padding=[dp(10), 0, dp(10), 0]
         )
 
-        # Circular Previous Button
         self.btn_full_prev_card = ClickableCard(
             size_hint=(None, None),
             size=(dp(58), dp(58)),
@@ -538,16 +560,16 @@ class PlayerScreen(FloatLayout):
             md_bg_color=(0.18, 0.22, 0.30, 1),
             pos_hint={'center_y': 0.5}
         )
-        self.icon_full_prev = MDIconButton(
+        self.icon_full_prev = MDIcon(
             icon="skip-previous",
-            icon_size="28sp",
+            font_size="28sp",
+            halign="center",
             pos_hint={'center_x': 0.5, 'center_y': 0.5},
             theme_text_color="Custom",
             text_color=(0.85, 0.88, 0.98, 1)
         )
         self.btn_full_prev_card.add_widget(self.icon_full_prev)
 
-        # Lavender Center Play/Pause Pill Capsule
         self.btn_full_play_capsule = ClickableCard(
             size_hint=(1, None),
             height=dp(58),
@@ -557,9 +579,10 @@ class PlayerScreen(FloatLayout):
             padding=[dp(16), 0, dp(16), 0]
         )
         cap_row = MDBoxLayout(orientation="horizontal", spacing=dp(8), pos_hint={'center_x': 0.5, 'center_y': 0.5})
-        self.capsule_icon = MDIconButton(
+        self.capsule_icon = MDIcon(
             icon="play",
-            icon_size="28sp",
+            font_size="28sp",
+            halign="center",
             theme_text_color="Custom",
             text_color=(0.08, 0.10, 0.15, 1),
             pos_hint={'center_y': 0.5}
@@ -575,7 +598,6 @@ class PlayerScreen(FloatLayout):
         cap_row.add_widget(self.capsule_label)
         self.btn_full_play_capsule.add_widget(cap_row)
 
-        # Circular Next Button
         self.btn_full_next_card = ClickableCard(
             size_hint=(None, None),
             size=(dp(58), dp(58)),
@@ -583,9 +605,10 @@ class PlayerScreen(FloatLayout):
             md_bg_color=(0.18, 0.22, 0.30, 1),
             pos_hint={'center_y': 0.5}
         )
-        self.icon_full_next = MDIconButton(
+        self.icon_full_next = MDIcon(
             icon="skip-next",
-            icon_size="28sp",
+            font_size="28sp",
+            halign="center",
             pos_hint={'center_x': 0.5, 'center_y': 0.5},
             theme_text_color="Custom",
             text_color=(0.85, 0.88, 0.98, 1)
@@ -597,7 +620,7 @@ class PlayerScreen(FloatLayout):
         controls_row.add_widget(self.btn_full_next_card)
         self.full_player.add_widget(controls_row)
 
-        # ----------------- BOTTOM UTILITY DOCK (IMAGE 2) -----------------
+        # Bottom Utility Dock
         util_bar = MDBoxLayout(size_hint_y=None, height=dp(52), spacing=dp(4))
         self.btn_queue = MDIconButton(icon="playlist-play")
         self.btn_timer = MDIconButton(icon="moon-waning-crescent")
@@ -605,7 +628,6 @@ class PlayerScreen(FloatLayout):
         self.btn_equalizer = MDIconButton(icon="tune-vertical")
         self.btn_full_repeat = MDIconButton(icon="repeat-off")
 
-        # Circular 3-dots Menu Button
         self.btn_more_circle = ClickableCard(
             size_hint=(None, None),
             size=(dp(40), dp(40)),
@@ -613,9 +635,10 @@ class PlayerScreen(FloatLayout):
             md_bg_color=(0.74, 0.78, 0.96, 0.85),
             pos_hint={'center_y': 0.5}
         )
-        self.icon_more = MDIconButton(
+        self.icon_more = MDIcon(
             icon="dots-vertical",
-            icon_size="22sp",
+            font_size="22sp",
+            halign="center",
             pos_hint={'center_x': 0.5, 'center_y': 0.5},
             theme_text_color="Custom",
             text_color=(0.08, 0.10, 0.15, 1)
@@ -629,7 +652,7 @@ class PlayerScreen(FloatLayout):
 
         self.add_widget(self.full_player)
 
-        # ----------------- TWO-STAGE BOTTOM SHEET OVERLAY (IMAGE 4 & 5) -----------------
+        # ----------------- OVERLAY BOTTOM SHEET -----------------
         self.bottom_sheet = TwoStageBottomSheet()
         self.add_widget(self.bottom_sheet)
 
@@ -641,9 +664,10 @@ class PlayerScreen(FloatLayout):
             padding=[dp(4), dp(2)]
         )
         box = MDBoxLayout(orientation="vertical", pos_hint={'center_x': 0.5, 'center_y': 0.5}, spacing=dp(1))
-        ic = MDIconButton(
+        ic = MDIcon(
             icon=icon,
-            icon_size="22sp",
+            font_size="22sp",
+            halign="center",
             theme_text_color="Custom",
             text_color=(0.95, 0.96, 1, 1) if active else (0.55, 0.58, 0.68, 1),
             pos_hint={'center_x': 0.5}
